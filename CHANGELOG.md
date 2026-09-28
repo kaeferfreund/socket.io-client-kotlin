@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [semantic versioning](https://semver.org/).
 
+## Unreleased
+
+### Testing
+
+- `socketio-testing`: `FixtureServer.close()` also stops the processes the
+  fixture started. When `node` is a version-manager shim (Volta, asdf, mise),
+  the server runs as the shim's child and a signal to the shim alone left it
+  running until the test JVM exited. The same applies when a fixture fails to
+  start and when `npm ci` times out.
+
 ## 17.0.1 — 2026-09-26
 
 Maven Central, GitHub Packages and the GitHub releases are now in sync: one

@@ -10,6 +10,7 @@ pinned by `package-lock.json` (`socket.io` 4.8.3) and installed with
 | `upstream-server.mjs` | Port of `packages/socket.io-client/test/support/server.ts` at the pinned reference | The server of the original client suite |
 | `engine-server.mjs` | Port of `packages/engine.io-client/test/support/hooks.js` at the pinned reference | The server of the original engine suite |
 | `auth-server.mjs` | Kotlin-specific | Token revocation and renewal across reconnects (KT contracts) |
+| `shim.mjs` | Kotlin-specific | Runs `server.js` as a child, like a version-manager shim, so `FixtureServerTest` can pin that closing a fixture stops its server |
 
 Every server listens on an ephemeral `127.0.0.1` port (`native-tls-server.mjs` on
 every interface, since its certificate names `localhost`, which resolves to `::1`
