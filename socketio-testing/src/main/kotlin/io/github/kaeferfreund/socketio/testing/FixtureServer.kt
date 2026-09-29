@@ -4,7 +4,9 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URI
 import java.security.MessageDigest
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
@@ -61,14 +63,10 @@ public class FixtureServer private constructor(
         }
     }
 
-    /** Stops the server: SIGTERM, then SIGKILL after one second. */
+    /** Stops the server and every process it started: SIGTERM, then SIGKILL after one second. */
     override fun close() {
         if (!process.isAlive) return
-        process.destroy()
-        if (!process.waitFor(1, TimeUnit.SECONDS)) {
-            process.destroyForcibly()
-            process.waitFor(1, TimeUnit.SECONDS)
-        }
+        terminate(process)
     }
 
     public companion object {
@@ -105,11 +103,11 @@ public class FixtureServer private constructor(
             val (port, secret) =
                 try {
                     ready.get(startupTimeout.inWholeMilliseconds, TimeUnit.MILLISECONDS)
-                } catch (e: java.util.concurrent.TimeoutException) {
-                    process.destroyForcibly()
+                } catch (e: TimeoutException) {
+                    terminate(process)
                     throw IllegalStateException("fixture $script did not start in $startupTimeout:\n$output", e)
                 } catch (e: java.util.concurrent.ExecutionException) {
-                    process.destroyForcibly()
+                    terminate(process)
                     throw IllegalStateException(e.cause?.message ?: "fixture failed", e)
                 }
             return FixtureServer(port, secret, process, output, if (tls) "https" else "http")
@@ -150,10 +148,33 @@ public class FixtureServer private constructor(
                         start()
                     }
             val finished = process.waitFor(timeout.inWholeMilliseconds, TimeUnit.MILLISECONDS)
-            if (!finished) process.destroyForcibly()
+            if (!finished) terminate(process)
             reader.join(1_000)
             return finished to output.toString()
         }
+
+        /**
+         * Stops [process] and its descendants: SIGTERM, then SIGKILL to those still running
+         * after one second. Behind a version-manager shim (Volta, asdf, mise) `node` and `npm`
+         * are wrappers that run the real program as their child, which a signal to the
+         * wrapper alone does not reach.
+         */
+        private fun terminate(process: Process) {
+            val processes = process.descendants().toList() + process.toHandle()
+            processes.forEach { it.destroy() }
+            if (!awaitExit(processes)) {
+                processes.forEach { it.destroyForcibly() }
+                awaitExit(processes)
+            }
+        }
+
+        private fun awaitExit(processes: List<ProcessHandle>): Boolean =
+            try {
+                CompletableFuture.allOf(*processes.map { it.onExit() }.toTypedArray()).get(1, TimeUnit.SECONDS)
+                true
+            } catch (_: TimeoutException) {
+                false
+            }
 
         private val READY = Regex("READY port=(\\d+) secret=(\\S+)")
 
