@@ -58,7 +58,7 @@ jobs:
             --commit "$GITHUB_SHA" --ci-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$CI_RUN" \
             --jobs "$RUNNER_TEMP/jobs.json" --parity "$RUNNER_TEMP/evidence/parity-summary.json" \
             --coverage "$RUNNER_TEMP/evidence/coverage-summary.json" --out "$RUNNER_TEMP/release-notes.md"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: release-notes
           path: ${{ runner.temp }}/release-notes.md
