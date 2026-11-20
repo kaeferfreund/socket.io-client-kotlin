@@ -135,6 +135,9 @@ public class PollingTransport(
 
     override fun onClose(details: CloseDetails?) {
         closedGeneration++
+        // A pause still waiting for its poll or write never completes on a closed transport.
+        pauseWaits.forEach(Cancellable::cancel)
+        pauseWaits.clear()
         pollRequest?.cancel()
         pollRequest = null
         // JavaScript lets pending writes run on; a server that never answers them would
@@ -178,10 +181,14 @@ public class PollingTransport(
         body: String,
         onSuccess: () -> Unit,
     ) {
+        val generation = closedGeneration
         val pending = PendingWrite()
         pendingWrites += pending
         pending.request =
             request("POST", body, options.requestTimeout) { result ->
+                // Like a poll, a write of a closed transport is cancelled and its outcome ignored:
+                // neither a drain nor the cancellation's error reaches the engine.
+                if (generation != closedGeneration) return@request
                 pendingWrites -= pending
                 result.fold(
                     onSuccess = { onSuccess() },
