@@ -6,6 +6,50 @@ All notable changes to this project are documented here. The format follows
 
 ## Unreleased
 
+### Security
+
+Fixes from a security review of the whole repository. Defaults and the public
+API are unchanged; every difference from the JavaScript client is listed in the
+[compatibility guide](Documentation/Guides/Compatibility.md).
+
+- URLs: brackets count as an IPv6 host only in the authority, so
+  `https://chat.example.com/?ids[]=1` no longer connects to `hat.example.co`.
+  The scheme is matched case-insensitively (`HTTPS://host` connected without TLS
+  to a host named `HTTPS`), a relative transport `path` can no longer change the host, and the
+  host after `\` or several `@`/`:` in the user info is the one OkHttp uses.
+- Engine.IO: duplicate upgrade offers and repeated handshakes no longer start
+  extra probe connections; closed and closing engines stop polling and cancel
+  pending requests; at most one unsent pong is buffered; the cookie jar keeps
+  browser limits (180 cookies, 4096 bytes each) and honours `Path` across
+  transports; polling packets are handled as they are decoded.
+- Socket.IO: `clearRecoveryState()` also drops the previous user's pending
+  emits, retries and early events, as the user-switch guide relies on;
+  acknowledgements are accepted only for emits that were sent; a namespace
+  CONNECT is accepted only as the answer to the socket's own; acks and early
+  events stay within their session; empty events count against the
+  receive-buffer byte limit; concurrent `SocketIO.io` calls no longer share one
+  namespace socket, and reusing a cached manager with other options logs a
+  warning.
+- Parser: a repeated attachment is copied once per conversion instead of once
+  per reference, and rejected binary input is not copied before the byte-limit
+  check. A payload too deep to decode reaches `onSerializable`'s `onError`.
+- OkHttp/TLS: `TlsPolicy` keeps the trust manager and pins of a supplied base
+  client; cross-origin polling redirects are refused before connecting; a
+  WebSocket handshake that enables an extension the client did not offer fails;
+  rejected header values and URL queries are redacted from errors.
+- Credentials no longer appear in `toString()` of requests, cookies and parsed
+  URLs, or in the error for an invalid auth value.
+
+### Documentation
+
+- A hardening recipe for apps that talk to untrusted servers, and precise notes
+  on what bounds incoming WebSocket messages.
+
+### Build
+
+- Release jobs no longer restore the CI Gradle cache or use the build cache, and
+  pass workflow values to scripts through the environment.
+
 ### Testing
 
 - `socketio-testing`: `FixtureServer.close()` also stops the processes the
