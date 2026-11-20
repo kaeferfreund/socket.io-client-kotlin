@@ -49,6 +49,8 @@ API are unchanged; every difference from the JavaScript client is listed in the
 - URLs: any number of `/` and `\` after the scheme is skipped as OkHttp does, so
   `http:///good.example` and `https://\good.example` no longer connect to
   `localhost`, nor `http:/good.example` to a host named `http`.
+- OkHttp: a rejected WebSocket subprotocol value (`protocols`, often a token) is
+  redacted from the error like other header values.
 
 ### Documentation
 

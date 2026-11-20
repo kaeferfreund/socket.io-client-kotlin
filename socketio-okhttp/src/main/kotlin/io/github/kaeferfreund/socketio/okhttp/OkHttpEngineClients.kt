@@ -166,7 +166,7 @@ public class OkHttpEngineClients(
         try {
             builder.url(request.url)
             for ((name, value) in request.headers) addHeader(builder, name, value)
-            if (request.protocols.isNotEmpty()) builder.header("Sec-WebSocket-Protocol", request.protocols.joinToString(", "))
+            if (request.protocols.isNotEmpty()) addHeader(builder, "Sec-WebSocket-Protocol", request.protocols.joinToString(", "), replace = true)
         } catch (e: IllegalArgumentException) {
             failLater { listener.onFailure(invalidRequest(e, request.url), null) }
             return ClosedConnection
@@ -231,14 +231,18 @@ public class OkHttpEngineClients(
         return OkHttpWebSocketConnection(socket)
     }
 
-    /** Adds a header; OkHttp's error for a rejected value names the header but not the value. */
+    /**
+     * Adds a header, or sets it when [replace]; OkHttp's error for a rejected value
+     * names the header but not the value.
+     */
     private fun addHeader(
         builder: Request.Builder,
         name: String,
         value: String,
+        replace: Boolean = false,
     ) {
         try {
-            builder.addHeader(name, value)
+            if (replace) builder.header(name, value) else builder.addHeader(name, value)
         } catch (e: IllegalArgumentException) {
             throw redacted(e, value)
         }

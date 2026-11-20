@@ -170,6 +170,60 @@ class OkHttpEngineClientsTest {
         assertEquals(0, server.requestCount)
     }
 
+    // Tokens are often sent as a WebSocket subprotocol; OkHttp's error for a rejected one quotes the value.
+    @Test
+    fun anInvalidWebSocketProtocolIsNotReported() {
+        val secret = "s3cret-tökén"
+        val url = server.url("/socket.io/").toString().replace("http", "ws")
+        val failure = webSocketFailure(EngineWebSocketRequest(url, emptyList(), listOf("token.$secret"), null))
+        assertTrue(failure.first is java.io.IOException)
+        val messages = generateSequence(failure.first) { it.cause }.map { it.toString() }.toList()
+        assertTrue(messages.none { "s3cret" in it }, "secret in $messages")
+        assertTrue("Sec-WebSocket-Protocol" in failure.first.message!!, failure.first.message)
+        assertEquals(0, server.requestCount)
+    }
+
+    @Test
+    fun webSocketProtocolsReplaceAProtocolHeader() {
+        server.enqueue(MockResponse.Builder().code(400).build())
+        val request =
+            EngineWebSocketRequest(
+                server.url("/socket.io/").toString().replace("http", "ws"),
+                listOf("Sec-WebSocket-Protocol" to "old"),
+                listOf("a", "b"),
+                null,
+            )
+        assertEquals(400, webSocketFailure(request).second)
+        assertEquals(listOf("a, b"), server.takeRequest().headers.values("Sec-WebSocket-Protocol"))
+    }
+
+    private fun webSocketFailure(request: EngineWebSocketRequest): Pair<Throwable, Int?> {
+        val failure = CompletableFuture<Pair<Throwable, Int?>>()
+        OkHttpEngineClients().connect(
+            request,
+            object : EngineWebSocketListener {
+                override fun onOpen(responseHeaders: List<Pair<String, String>>) = Unit
+
+                override fun onMessage(text: String) = Unit
+
+                override fun onMessage(bytes: ByteArray) = Unit
+
+                override fun onClosed(
+                    code: Int,
+                    reason: String,
+                ) = Unit
+
+                override fun onFailure(
+                    error: Throwable,
+                    httpStatus: Int?,
+                ) {
+                    failure.complete(error to httpStatus)
+                }
+            },
+        )
+        return failure.get(5, TimeUnit.SECONDS)
+    }
+
     @Test
     fun reportsErrorStatusesAsResponses() {
         server.enqueue(MockResponse.Builder().code(400).body("{\"code\":1,\"message\":\"Session ID unknown\"}").build())
