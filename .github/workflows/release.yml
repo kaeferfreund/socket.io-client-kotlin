@@ -53,8 +53,10 @@ jobs:
           gh run view "$run" -R "$GITHUB_REPOSITORY" --json jobs --jq '[.jobs[] | {name, conclusion}]' > "$RUNNER_TEMP/jobs.json"
           gh run download "$run" -R "$GITHUB_REPOSITORY" -n parity-summary -D "$RUNNER_TEMP/evidence"
       - name: Release notes from CHANGELOG.md and the CI evidence
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          python3 scripts/release-notes.py --version "${{ steps.version.outputs.version }}" \
+          python3 scripts/release-notes.py --version "$VERSION" \
             --commit "$GITHUB_SHA" --ci-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$CI_RUN" \
             --jobs "$RUNNER_TEMP/jobs.json" --parity "$RUNNER_TEMP/evidence/parity-summary.json" \
             --coverage "$RUNNER_TEMP/evidence/coverage-summary.json" --out "$RUNNER_TEMP/release-notes.md"
