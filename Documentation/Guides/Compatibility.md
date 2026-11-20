@@ -117,8 +117,9 @@ bound. A well-behaved server never notices these differences.
   that stalls the write could grow the buffer without bound.
 - **Cookies.** With `withCredentials`, the cookie jar keeps the limits
   browsers apply to one site: at most 180 cookies (the oldest makes room) and
-  at most 4096 bytes of name and value per cookie. The jar of the JavaScript
-  Node client is unbounded. It also ignores `Path`; here, when transports use
+  at most 4096 bytes of name and value per cookie. A cookie that arrives
+  already expired only deletes the stored cookie of its name, so it never makes
+  a live one give way. The jar of the JavaScript Node client is unbounded. It also ignores `Path`; here, when transports use
   different paths (`TransportOverrides.path`), a cookie set by one transport
   reaches another only if its `Path` matches that path as in a browser. On the
   path that set it, a cookie is always sent back, so connections whose

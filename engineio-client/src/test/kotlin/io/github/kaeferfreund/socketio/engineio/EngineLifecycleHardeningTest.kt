@@ -445,6 +445,22 @@ class EngineLifecycleHardeningTest {
     }
 
     @Test
+    fun anAlreadyExpiredCookieNeverEvictsALiveOne() {
+        val now = java.time.Instant.parse("2026-01-01T00:00:00Z")
+        val jar = EngineCookieJar { now }
+        jar.parseCookies(List(CookieLimits.MAX_COOKIES) { "c$it=$it" })
+        jar.parseCookies(listOf("x=; Max-Age=-1", "y=; Max-Age=0", "z=; Expires=Thu, 01 Jan 1970 00:00:00 GMT"))
+        val names = jar.current.map { it.name }
+        assertEquals(CookieLimits.MAX_COOKIES, names.size)
+        assertEquals("c0", names.first())
+        assertFalse(names.any { it in setOf("x", "y", "z") }, names.toString())
+        // An expired cookie still deletes a stored one of the same name.
+        jar.parseCookies(listOf("c5=; Max-Age=0"))
+        assertEquals(CookieLimits.MAX_COOKIES - 1, jar.current.size)
+        assertFalse(jar.current.any { it.name == "c5" })
+    }
+
+    @Test
     fun aCookieLargerThanBrowsersAcceptIsIgnored() {
         val jar = EngineCookieJar()
         val name = "big"

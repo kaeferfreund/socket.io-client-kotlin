@@ -121,7 +121,8 @@ public class EngineCookieJar(
      * RFC 6265 cookie octets are ASCII, and such a value could not be sent back in
      * a request header (Node's HTTP client fails the request instead). So is a
      * cookie larger than browsers accept; when the jar is full, expired cookies
-     * and then the oldest one make room.
+     * and then the oldest one make room. A cookie that is already expired when it
+     * arrives removes the stored cookie of its name and is not stored itself.
      */
     public fun parseCookies(setCookieHeaders: List<String>): Unit = parseCookies(setCookieHeaders, null)
 
@@ -131,10 +132,17 @@ public class EngineCookieJar(
         requestPath: String?,
     ) {
         for (header in setCookieHeaders) {
-            val cookie = EngineCookie.parse(header, clock()) ?: continue
+            val now = clock()
+            val cookie = EngineCookie.parse(header, now) ?: continue
             if (!cookie.name.isPrintableAscii() || !cookie.value.isPrintableAscii()) continue
             // Printable ASCII: one byte per character.
             if (cookie.name.length + cookie.value.length > CookieLimits.MAX_COOKIE_BYTES) continue
+            // A cookie that arrives expired (`Max-Age=0`, a past `Expires`) only deletes its
+            // namesake, as in a browser; stored, it could make a full jar evict a live cookie.
+            if (cookie.expires?.isAfter(now) == false) {
+                cookies.remove(cookie.name)
+                continue
+            }
             if (cookie.name !in cookies && cookies.size >= CookieLimits.MAX_COOKIES) makeRoom()
             cookies[cookie.name] = Entry(cookie, requestPath, requestPath?.let { cookiePath(header, it) })
         }
