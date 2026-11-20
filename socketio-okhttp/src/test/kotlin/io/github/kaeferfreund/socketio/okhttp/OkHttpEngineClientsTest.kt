@@ -11,6 +11,7 @@ import mockwebserver3.MockWebServer
 import mockwebserver3.SocketEffect
 import okhttp3.ConnectionPool
 import okhttp3.OkHttpClient
+import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
@@ -137,8 +138,14 @@ class OkHttpEngineClientsTest {
         val failures = mutableListOf<Throwable>()
         val badHeader = EngineHttpRequest("GET", server.url("/socket.io/?EIO=4&token=$secret").toString(), listOf("X-Token" to secret), null, null)
         failures += execute(clients, badHeader).exceptionOrNull()!!
-        val badUrl = EngineHttpRequest("GET", "http://exa mple.com:99999/socket.io/?token=$secret#$secret", emptyList(), null, null)
-        failures += execute(clients, badUrl).exceptionOrNull()!!
+        // Without a scheme, OkHttp's message quotes the start of the URL: here the query or fragment.
+        val badUrls = listOf("?$secret=1", "#$secret")
+        for (badUrl in badUrls) {
+            val raw = runCatching { Request.Builder().url(badUrl) }.exceptionOrNull()!!
+            assertTrue("s3cr" in raw.message!!, raw.message)
+            failures += execute(clients, EngineHttpRequest("GET", badUrl, emptyList(), null, null)).exceptionOrNull()!!
+            failures += webSocketFailure(EngineWebSocketRequest(badUrl, emptyList(), emptyList(), null)).first
+        }
         val wsFailure = CompletableFuture<Throwable>()
         clients.connect(
             EngineWebSocketRequest(server.url("/socket.io/?token=$secret").toString().replace("http", "ws"), listOf("X-Token" to secret), emptyList(), null),
@@ -166,9 +173,10 @@ class OkHttpEngineClientsTest {
         for (failure in failures) {
             assertTrue(failure is java.io.IOException)
             val messages = generateSequence(failure) { it.cause }.map { it.toString() }.toList()
-            assertTrue(messages.none { "s3cret" in it }, "secret in $messages")
+            assertTrue(messages.none { "s3cr" in it }, "secret in $messages")
         }
         assertTrue("X-Token" in failures[0].message!!, failures[0].message)
+        assertTrue("scheme" in failures[1].message!!, failures[1].message)
         assertEquals(0, server.requestCount)
     }
 

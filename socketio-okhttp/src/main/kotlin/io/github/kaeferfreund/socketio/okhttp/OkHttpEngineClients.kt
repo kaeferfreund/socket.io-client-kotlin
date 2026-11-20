@@ -260,7 +260,15 @@ public class OkHttpEngineClients(
         e: IllegalArgumentException,
         url: String,
     ): IOException {
-        val cause = redacted(e, url.substringAfter('?', "").substringBefore('#'), url.substringAfter('#', ""))
+        val secrets = listOf(url.substringAfter('?', "").substringBefore('#'), url.substringAfter('#', ""))
+        val cause =
+            redacted(e) { message ->
+                // For a URL without a scheme OkHttp quotes its truncated start ("… no scheme was
+                // found for ?toke..."), which may be the query and matches no secret in full.
+                val quote = message.indexOf(NO_SCHEME_QUOTE)
+                val text = if (quote < 0) message else message.substring(0, quote + NO_SCHEME_QUOTE.length) + REDACTED
+                redact(text, secrets)
+            }
         return IOException("invalid request: ${cause.message}", cause)
     }
 
@@ -268,12 +276,23 @@ public class OkHttpEngineClients(
     private fun redacted(
         e: IllegalArgumentException,
         vararg secrets: String,
+    ): IllegalArgumentException = redacted(e) { redact(it, secrets.asList()) }
+
+    /** [e] itself, or a copy with the same stack trace whose message is [clean]ed. */
+    private fun redacted(
+        e: IllegalArgumentException,
+        clean: (String) -> String,
     ): IllegalArgumentException {
         val message = e.message ?: return e
-        val clean = secrets.filter { it.isNotEmpty() }.fold(message) { text, secret -> text.replace(secret, REDACTED) }
-        if (clean == message) return e
-        return IllegalArgumentException(clean).also { it.stackTrace = e.stackTrace }
+        val cleaned = clean(message)
+        if (cleaned == message) return e
+        return IllegalArgumentException(cleaned).also { it.stackTrace = e.stackTrace }
     }
+
+    private fun redact(
+        text: String,
+        secrets: List<String>,
+    ): String = secrets.filter { it.isNotEmpty() }.fold(text) { result, secret -> result.replace(secret, REDACTED) }
 
     /** Scheme, host and port of the URL a request was made for. */
     private class Origin private constructor(
@@ -457,6 +476,9 @@ public class OkHttpEngineClients(
         private val TEXT_PLAIN = "text/plain;charset=UTF-8".toMediaType()
 
         private const val REDACTED = "<redacted>"
+
+        /** Precedes the quoted start of a URL without a scheme in OkHttp's message. */
+        private const val NO_SCHEME_QUOTE = "no scheme was found for "
 
         private fun crossOrigin(url: HttpUrl) = ProtocolException("redirect to another origin refused: ${url.redact()}")
 
