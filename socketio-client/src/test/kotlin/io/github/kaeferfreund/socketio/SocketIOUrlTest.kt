@@ -124,6 +124,12 @@ class SocketIOUrlTest {
         assertEquals("ws", SocketIO.url("Ws://example.com", location = SocketIO.BaseLocation("https:", "woot.com")).protocol)
     }
 
+    @Test
+    fun theHostIsTheOneAWhatwgParserSees() {
+        assertEquals("https://good.example:443", SocketIO.url("https://good.example\\@evil.example/").id)
+        assertEquals("https://good.example:443", SocketIO.url("https://evil.example:x:y@good.example/").id)
+    }
+
     private fun lazyOptions(block: SocketManagerOptions.Builder.() -> Unit = {}) =
         SocketManagerOptions {
             autoConnect = false

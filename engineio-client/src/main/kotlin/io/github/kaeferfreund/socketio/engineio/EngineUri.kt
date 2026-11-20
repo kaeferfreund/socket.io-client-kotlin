@@ -62,10 +62,13 @@ public object EngineUri {
 
     // Deliberate deviation from JavaScript: the scheme matches case-insensitively and is lowercased,
     // so `HTTPS://host` selects TLS instead of becoming the host name `HTTPS` (RFC 3986, section 3.1).
+    // Also unlike JavaScript, the authority ends at `\` and the host follows its last `@`, as in WHATWG
+    // URLs and OkHttp's HttpUrl: `https://good.example\@evil.example` and `https://evil.example:x:y@good.example`
+    // both name `good.example`, so an allowlist check with HttpUrl matches the host connected to.
     private val PARSE_URI =
         Regex(
-            "^(?:(?![^:@/?#]+:[^:@/]*@)((?i:http|https|ws|wss))://)?((?:(([^:@/?#]*)(?::([^:@/?#]*))?)?@)?" +
-                "((?:[a-f0-9]{0,4}:){2,7}[a-f0-9]{0,4}|[^:/?#]*)(?::(\\d*))?)(((/(?:[^?#](?![^?#/]*\\.[^?#/.]+(?:[?#]|$)))*/?)?" +
+            "^(?:(?![^:@/?#]+:[^:@/]*@)((?i:http|https|ws|wss))://)?((?:(([^:/?#\\\\]*)(?::([^/?#\\\\]*))?)?@)?" +
+                "((?:[a-f0-9]{0,4}:){2,7}[a-f0-9]{0,4}|[^:/?#\\\\]*)(?::(\\d*))?)(((/(?:[^?#](?![^?#/]*\\.[^?#/.]+(?:[?#]|$)))*/?)?" +
                 "([^?#/]*))(?:\\?([^#]*))?(?:#(.*))?)",
         )
 
@@ -87,7 +90,7 @@ public object EngineUri {
         return checkNotNull(match(uri, uri, bracketed = false))
     }
 
-    /** Indices of `[` and `]` when both lie in the authority, before the first `/`, `?` or `#` after the scheme. */
+    /** Indices of `[` and `]` when both lie in the authority, before the first `/`, `?`, `#` or `\` after the scheme. */
     private fun ipv6Literal(uri: String): Pair<Int, Int>? {
         val start = SCHEME_PREFIX.find(uri)?.range?.last?.plus(1) ?: 0
         val end = uri.indexOfAny(AUTHORITY_END, start).let { if (it == -1) uri.length else it }
@@ -138,7 +141,7 @@ public object EngineUri {
 
     private val SCHEME_PREFIX = Regex("^(?:http|https|ws|wss)://", RegexOption.IGNORE_CASE)
 
-    private val AUTHORITY_END = charArrayOf('/', '?', '#')
+    private val AUTHORITY_END = charArrayOf('/', '?', '#', '\\')
 
     /** JavaScript `encodeURIComponent`. */
     public fun encodeURIComponent(value: String): String {

@@ -134,6 +134,68 @@ class EngineUriTest {
             assertEquals("443", engine.port)
         }
 
+    // The host must be the one a WHATWG/OkHttp parser sees, or an allowlist check on HttpUrl can be bypassed.
+    @Test
+    fun aBackslashEndsTheAuthorityAsInWhatwgUrls() {
+        val parsed = EngineUri.parse("https://good.example\\@evil.example/")
+        assertEquals("https", parsed.protocol)
+        assertEquals("good.example", parsed.host)
+        assertEquals("", parsed.userInfo)
+        assertEquals("", parsed.port)
+
+        val withPort = EngineUri.parse("https://good.example:8443\\@evil.example/")
+        assertEquals("good.example", withPort.host)
+        assertEquals("8443", withPort.port)
+
+        val ipv6 = EngineUri.parse("https://[::1]\\@evil.example/?a[]=1")
+        assertEquals("::1", ipv6.host)
+        assertTrue(ipv6.ipv6)
+
+        assertEquals("good.example", EngineUri.parse("good.example\\@evil.example").host)
+    }
+
+    @Test
+    fun theHostFollowsTheLastAtSignOfTheAuthority() {
+        val colons = EngineUri.parse("https://evil.example:x:y@good.example/chat")
+        assertEquals("good.example", colons.host)
+        assertEquals("evil.example:x:y", colons.userInfo)
+        assertEquals("evil.example", colons.user)
+        assertEquals("x:y", colons.password)
+        assertEquals("/chat", colons.path)
+
+        val ats = EngineUri.parse("wss://a@b@good.example:8443")
+        assertEquals("good.example", ats.host)
+        assertEquals("8443", ats.port)
+        assertEquals("a@b", ats.user)
+
+        val both = EngineUri.parse("http://a@b:c@d@good.example/")
+        assertEquals("good.example", both.host)
+        assertEquals("a@b", both.user)
+        assertEquals("c@d", both.password)
+
+        val ipv6 = EngineUri.parse("http://u:p:q@[::1]:3000/")
+        assertEquals("::1", ipv6.host)
+        assertEquals("3000", ipv6.port)
+        assertEquals("p:q", ipv6.password)
+    }
+
+    @Test
+    fun backslashesAndAtSignsAfterTheAuthorityAreUnchanged() {
+        val parsed = EngineUri.parse("https://good.example/a\\b?c=\\@evil.example&d=e@f#\\g")
+        assertEquals("good.example", parsed.host)
+        assertEquals("", parsed.userInfo)
+        assertEquals("/a\\b", parsed.path)
+        assertEquals("c=\\@evil.example&d=e@f", parsed.query)
+        assertEquals("\\g", parsed.anchor)
+    }
+
+    @Test
+    fun theEngineConnectsToTheHostAWhatwgParserSees() =
+        runTest {
+            assertEquals("good.example", newEngine("https://good.example\\@evil.example/").hostname)
+            assertEquals("good.example", newEngine("https://evil.example:x:y@good.example/").hostname)
+        }
+
     @Test
     fun aRelativePathCannotChangeTheAuthority() =
         runTest {
