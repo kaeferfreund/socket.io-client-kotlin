@@ -133,6 +133,22 @@ class SocketIOUrlTest {
         assertEquals("https://good.example:443", SocketIO.url("https://evil.example:x:y@good.example/").id)
     }
 
+    @Test
+    fun slashesAndBackslashesAfterTheSchemeAreSkippedAsInWhatwgUrls() {
+        for (uri in listOf("http:///good.example/chat", "http:/good.example/chat", "http:good.example/chat", "HTTP:\\\\good.example/chat")) {
+            val parsed = SocketIO.url(uri)
+            assertEquals("http", parsed.protocol, uri)
+            assertEquals("good.example", parsed.host, uri)
+            assertEquals("80", parsed.port, uri)
+            assertEquals("/chat", parsed.path, uri)
+            assertEquals("http://good.example:80", parsed.id, uri)
+            assertEquals("http://good.example/chat", parsed.source, uri)
+        }
+        assertEquals("wss://good.example:443", SocketIO.url("wss://\\good.example").id)
+        assertEquals("https://good.example:443", SocketIO.url("http:pass@good.example").id)
+        assertEquals("https://http:8080", SocketIO.url("http:8080").id)
+    }
+
     private fun lazyOptions(block: SocketManagerOptions.Builder.() -> Unit = {}) =
         SocketManagerOptions {
             autoConnect = false

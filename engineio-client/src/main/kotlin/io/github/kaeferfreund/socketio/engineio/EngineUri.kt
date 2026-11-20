@@ -67,9 +67,15 @@ public object EngineUri {
     // Also unlike JavaScript, the authority ends at `\` and the host follows its last `@`, as in WHATWG
     // URLs and OkHttp's HttpUrl: `https://good.example\@evil.example` and `https://evil.example:x:y@good.example`
     // both name `good.example`, so an allowlist check with HttpUrl matches the host connected to.
+    // For the same reason any number of `/` and `\` after the scheme is skipped, as HttpUrl does:
+    // `http:///good.example`, `https://\good.example` and `http:/good.example` name `good.example`, where
+    // JavaScript takes an empty host (and connects to localhost) or the host `http`. Only a scheme name
+    // followed by a bare port (`http:8080`) or by user info (`http:pass@host`) stays part of the authority.
+    private const val SCHEME = "(?![^:@/?#]+:[^:@/]*@)((?i:http|https|ws|wss)):(?:[/\\\\]+|(?!\\d*(?:[/?#\\\\]|$)))"
+
     private val PARSE_URI =
         Regex(
-            "^(?:(?![^:@/?#]+:[^:@/]*@)((?i:http|https|ws|wss))://)?((?:(([^:/?#\\\\]*)(?::([^/?#\\\\]*))?)?@)?" +
+            "^(?:$SCHEME)?((?:(([^:/?#\\\\]*)(?::([^/?#\\\\]*))?)?@)?" +
                 "((?:[a-f0-9]{0,4}:){2,7}[a-f0-9]{0,4}|[^:/?#\\\\]*)(?::(\\d*))?)(((/(?:[^?#](?![^?#/]*\\.[^?#/.]+(?:[?#]|$)))*/?)?" +
                 "([^?#/]*))(?:\\?([^#]*))?(?:#(.*))?)",
         )
@@ -141,7 +147,7 @@ public object EngineUri {
         )
     }
 
-    private val SCHEME_PREFIX = Regex("^(?:http|https|ws|wss)://", RegexOption.IGNORE_CASE)
+    private val SCHEME_PREFIX = Regex("^$SCHEME")
 
     private val AUTHORITY_END = charArrayOf('/', '?', '#', '\\')
 

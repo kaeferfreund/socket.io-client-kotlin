@@ -46,6 +46,9 @@ API are unchanged; every difference from the JavaScript client is listed in the
   rejected header values and URL queries are redacted from errors.
 - Credentials no longer appear in `toString()` of requests, cookies and parsed
   URLs, or in the error for an invalid auth value.
+- URLs: any number of `/` and `\` after the scheme is skipped as OkHttp does, so
+  `http:///good.example` and `https://\good.example` no longer connect to
+  `localhost`, nor `http:/good.example` to a host named `http`.
 
 ### Documentation
 

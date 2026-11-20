@@ -3,7 +3,6 @@ package io.github.kaeferfreund.socketio
 import io.github.kaeferfreund.socketio.engineio.EngineUri
 import io.github.kaeferfreund.socketio.engineio.LogLevel
 import io.github.kaeferfreund.socketio.parser.SocketIOPacket
-import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -179,12 +178,14 @@ public object SocketIO {
         }
         // Unlike JavaScript, the scheme matches case-insensitively and is lowercased (RFC 3986, section 3.1):
         // `HTTPS://host` would otherwise get a second scheme prefixed and resolve to the host `HTTPS`.
-        val scheme = Regex("^(https?|wss?)://", RegexOption.IGNORE_CASE).find(value)
+        // The scheme is the one EngineUri.parse finds, which also skips extra `/` and `\` after it as OkHttp's
+        // HttpUrl does, so `http:/host` and `http:///host` become `http://host` instead of `https://http:/host`.
+        val scheme = EngineUri.parse(value).protocol
         value =
-            if (scheme == null) {
+            if (scheme.isEmpty()) {
                 (location?.protocol ?: "https:") + "//" + value
             } else {
-                scheme.value.lowercase(Locale.ROOT) + value.substring(scheme.value.length)
+                scheme + "://" + value.substring(scheme.length + 1).trimStart('/', '\\')
             }
         val parsed = EngineUri.parse(value)
         var port = parsed.port

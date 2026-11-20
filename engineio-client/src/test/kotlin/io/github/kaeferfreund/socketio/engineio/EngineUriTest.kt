@@ -196,6 +196,68 @@ class EngineUriTest {
             assertEquals("good.example", newEngine("https://evil.example:x:y@good.example/").hostname)
         }
 
+    // OkHttp's HttpUrl and WHATWG URLs skip every `/` and `\\` after `http:`; parseuri took `http:///good.example`
+    // as an empty host (so the engine connected to localhost) and `http:/good.example` as the host `http`.
+    @Test
+    fun slashesAndBackslashesAfterTheSchemeAreSkippedAsInWhatwgUrls() {
+        for (uri in listOf("http:///good.example", "http:/good.example", "http:good.example", "http:\\good.example", "http://\\/good.example")) {
+            val parsed = EngineUri.parse(uri)
+            assertEquals("http", parsed.protocol, uri)
+            assertEquals("good.example", parsed.host, uri)
+            assertEquals("", parsed.port, uri)
+        }
+        val secure = EngineUri.parse("https:////good.example:8443/chat?a=1")
+        assertEquals("https", secure.protocol)
+        assertTrue(secure.secure)
+        assertEquals("good.example", secure.host)
+        assertEquals("8443", secure.port)
+        assertEquals("/chat", secure.path)
+        assertEquals("a=1", secure.query)
+
+        assertEquals("good.example", EngineUri.parse("https://\\good.example").host)
+        assertEquals("good.example", EngineUri.parse("HTTPS:\\\\good.example").host)
+        assertEquals("wss", EngineUri.parse("wss:/good.example").protocol)
+        assertEquals("good.example", EngineUri.parse("http:/user:pw@good.example").host)
+
+        val ipv6 = EngineUri.parse("http:///[::1]:3000/x?a[]=1")
+        assertEquals("::1", ipv6.host)
+        assertTrue(ipv6.ipv6)
+        assertEquals("3000", ipv6.port)
+    }
+
+    @Test
+    fun aSchemeNameFollowedByAPortOrUserInfoIsStillAHost() {
+        val port = EngineUri.parse("http:8080")
+        assertEquals("", port.protocol)
+        assertEquals("http", port.host)
+        assertEquals("8080", port.port)
+        assertEquals("http", EngineUri.parse("http:8080/chat").host)
+        assertEquals("https", EngineUri.parse("https:").host)
+
+        val userInfo = EngineUri.parse("http:pass@good.example")
+        assertEquals("", userInfo.protocol)
+        assertEquals("http", userInfo.user)
+        assertEquals("good.example", userInfo.host)
+    }
+
+    @Test
+    fun theEngineConnectsToTheHostAfterExtraSlashes() =
+        runTest {
+            val engine = newEngine("https://\\good.example")
+            assertEquals("good.example", engine.hostname)
+            assertEquals("443", engine.port)
+            assertEquals("good.example", newEngine("http:///good.example").hostname)
+            assertEquals("80", newEngine("http:///good.example").port)
+        }
+
+    @Test
+    fun aUrlWithoutHostStillFallsBackToLocalhostAsInJavaScript() =
+        runTest {
+            assertEquals("localhost", newEngine("http://").hostname)
+            assertEquals("localhost", newEngine("https:///").hostname)
+            assertEquals("443", newEngine("https:///").port)
+        }
+
     @Test
     fun aRelativePathCannotChangeTheAuthority() =
         runTest {
