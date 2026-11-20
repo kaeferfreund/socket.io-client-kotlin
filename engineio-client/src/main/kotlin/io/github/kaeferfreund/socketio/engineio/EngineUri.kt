@@ -57,7 +57,9 @@ public object EngineUri {
                 return data
             }
 
-        override fun toString(): String = "Parsed(protocol=$protocol, host=$host, port=$port, path=$path, query=$query)"
+        /** Scheme, host, port and path; query values are redacted, since they may carry tokens. */
+        override fun toString(): String =
+            "Parsed(protocol=$protocol, host=$host, port=$port, path=$path, query=${redactUrl("?$query").removePrefix("?")})"
     }
 
     // Deliberate deviation from JavaScript: the scheme matches case-insensitively and is lowercased,

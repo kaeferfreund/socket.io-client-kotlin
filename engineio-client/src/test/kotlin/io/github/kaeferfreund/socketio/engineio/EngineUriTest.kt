@@ -247,6 +247,15 @@ class EngineUriTest {
         return requests.single()
     }
 
+    @Test
+    fun toStringRedactsQueryValues() {
+        val printed = EngineUri.parse("https://chat.example.com/socket.io/?token=secret&EIO=4").toString()
+        assertEquals(
+            "Parsed(protocol=https, host=chat.example.com, port=, path=/socket.io/, query=token=***&EIO=***)",
+            printed,
+        )
+    }
+
     private fun TestScope.newEngine(uri: String): EngineSocket =
         EngineSocket(uri, EngineOptions(), ProtocolExecutor(StandardTestDispatcher(testScheduler), testScheduler.timeSource))
 }
