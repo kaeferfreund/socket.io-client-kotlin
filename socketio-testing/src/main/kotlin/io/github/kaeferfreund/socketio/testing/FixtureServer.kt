@@ -3,6 +3,9 @@ package io.github.kaeferfreund.socketio.testing
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URI
+import java.nio.file.FileSystems
+import java.nio.file.Files
+import java.nio.file.attribute.PosixFilePermissions
 import java.security.MessageDigest
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
@@ -178,8 +181,22 @@ public class FixtureServer private constructor(
 
         private val READY = Regex("READY port=(\\d+) secret=(\\S+)")
 
-        private val watchdog: File by lazy {
-            File.createTempFile("socketio-fixture-watchdog", ".cjs").apply {
+        private val watchdog: File by lazy { createWatchdogScript() }
+
+        /**
+         * Writes the watchdog script that `node --require` loads into every fixture, to a new
+         * temporary file that is deleted when this JVM exits. The temporary directory may be
+         * shared, so on POSIX file systems the file is readable and writable by its owner only,
+         * whatever the umask; elsewhere it inherits the ACL of the user's temporary directory.
+         */
+        internal fun createWatchdogScript(): File {
+            val ownerOnly =
+                if ("posix" in FileSystems.getDefault().supportedFileAttributeViews()) {
+                    arrayOf(PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")))
+                } else {
+                    emptyArray()
+                }
+            return Files.createTempFile("socketio-fixture-watchdog", ".cjs", *ownerOnly).toFile().apply {
                 deleteOnExit()
                 writeText(
                     """
