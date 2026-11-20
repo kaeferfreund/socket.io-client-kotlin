@@ -30,10 +30,54 @@ public class EngineHttpRequest(
     /** Whole-request timeout; `null` means none. */
     public val timeout: Duration?,
     /** Maximum response body bytes to accept; larger bodies fail the request. */
-    public val maxResponseBytes: Long = Long.MAX_VALUE,
+    public val maxResponseBytes: Long,
+    /**
+     * The cookies of this request across the redirects the client follows; see
+     * [EngineRedirectCookies]. The engine sets it on every polling request. `null` for a request
+     * built without one: a client that follows redirects then sends its `Cookie` headers only to
+     * the host of [url].
+     */
+    public val redirectCookies: EngineRedirectCookies?,
 ) {
+    /** A request without [redirectCookies], as before they existed. */
+    public constructor(
+        method: String,
+        url: String,
+        headers: List<Pair<String, String>>,
+        body: String?,
+        timeout: Duration?,
+        maxResponseBytes: Long = Long.MAX_VALUE,
+    ) : this(method, url, headers, body, timeout, maxResponseBytes, null)
+
     /** Method and URL, with query values and user info redacted and without fragment: they may carry the session id or tokens. */
     override fun toString(): String = "EngineHttpRequest($method ${redactUrl(url)})"
+}
+
+/**
+ * The cookies of one polling request across the redirects its [EngineHttpClient] follows.
+ *
+ * The first request carries the engine's `Cookie` headers in [EngineHttpRequest.headers]. A client
+ * that follows a redirect calls [followRedirect] before it sends the follow-up request, and sends
+ * that request with the returned `Cookie` header values instead of the ones it carried so far.
+ * The engine answers from its cookie jar by RFC 6265 rules (domain, host-only, path, `Secure`,
+ * expiry) for the new URL; a `Cookie` header from `extraHeaders` only goes to the host of the
+ * first request. A client that follows no redirects never calls it.
+ *
+ * Called on the client's thread, one call at a time, before the request's callback runs; the
+ * engine applies the cookies the redirect responses set to its jar when the response arrives.
+ */
+public interface EngineRedirectCookies {
+    /**
+     * The redirect response for [responseUrl] carried [setCookieHeaders] (the values of its
+     * `Set-Cookie` headers) and the client follows it to [nextUrl]. Stores those cookies for
+     * [responseUrl] and returns the `Cookie` header values for the request to [nextUrl]; an
+     * empty list means the request carries no `Cookie` header.
+     */
+    public fun followRedirect(
+        responseUrl: String,
+        setCookieHeaders: List<String>,
+        nextUrl: String,
+    ): List<String>
 }
 
 /** A completed HTTP exchange. */

@@ -47,7 +47,7 @@ public class WebSocketTransport(
 
                         override fun onOpen(responseHeaders: List<Pair<String, String>>) =
                             deliver {
-                                jar?.parseCookies(responseHeaders.filter { it.first.equals("set-cookie", true) }.map { it.second }, requestPath)
+                                jar?.parseCookies(responseHeaders.filter { it.first.equals("set-cookie", true) }.map { it.second }, cookieUrl)
                                 onOpen()
                             }
 

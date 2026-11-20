@@ -449,26 +449,26 @@ class EngineLifecycleHardeningTest {
     @Test
     fun cookiePathsMatchLikeInABrowser() {
         val jar = EngineCookieJar()
-        jar.parseCookies(listOf("explicit=1; Path=/a", "implicit=2", "invalid=3; Path=x", "root=4; path=/"), "/a/")
-        assertEquals("explicit=1; implicit=2; invalid=3; root=4", jar.cookieHeader("/a/"))
-        assertEquals("explicit=1; implicit=2; invalid=3; root=4", jar.cookieHeader("/a/b/"))
-        assertEquals("explicit=1; implicit=2; invalid=3; root=4", jar.cookieHeader("/a"))
-        assertEquals("root=4", jar.cookieHeader("/ab/"))
-        assertEquals("root=4", jar.cookieHeader("/"))
+        jar.parseCookies(listOf("explicit=1; Path=/a", "implicit=2", "invalid=3; Path=x", "root=4; path=/"), "http://h.example/a/")
+        assertEquals("explicit=1; implicit=2; invalid=3; root=4", jar.cookieHeader("http://h.example/a/"))
+        assertEquals("explicit=1; implicit=2; invalid=3; root=4", jar.cookieHeader("http://h.example/a/b/"))
+        assertEquals("explicit=1; implicit=2; invalid=3; root=4", jar.cookieHeader("http://h.example/a"))
+        assertEquals("root=4", jar.cookieHeader("http://h.example/ab/"))
+        assertEquals("root=4", jar.cookieHeader("http://h.example/"))
         // The public API is not scoped, as in JavaScript.
         assertEquals("explicit=1; implicit=2; invalid=3; root=4", jar.cookieHeader())
         jar.parseCookies(listOf("unscoped=5"))
-        assertEquals("root=4; unscoped=5", jar.cookieHeader("/elsewhere/"))
+        assertEquals("root=4; unscoped=5", jar.cookieHeader("http://h.example/elsewhere/"))
     }
 
     @Test
     fun aPathAttributeIsFoundWithoutASpaceAfterTheSemicolon() {
         val jar = EngineCookieJar()
-        jar.parseCookies(listOf("tight=1; HttpOnly;Path=/a/sub", "spaced=2; Secure ;  Path=/a/sub"), "/a/")
-        assertEquals("tight=1; spaced=2", jar.cookieHeader("/a/"))
-        assertEquals("tight=1; spaced=2", jar.cookieHeader("/a/sub/"))
+        jar.parseCookies(listOf("tight=1; HttpOnly;Path=/a/sub", "spaced=2; Secure ;  Path=/a/sub"), "https://h.example/a/")
+        assertEquals("tight=1; spaced=2", jar.cookieHeader("https://h.example/a/"))
+        assertEquals("tight=1; spaced=2", jar.cookieHeader("https://h.example/a/sub/"))
         // Without the attribute, the default path "/a" would match here.
-        assertEquals(null, jar.cookieHeader("/a/other/"))
+        assertEquals(null, jar.cookieHeader("https://h.example/a/other/"))
     }
 
     @Test

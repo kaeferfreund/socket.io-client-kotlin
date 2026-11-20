@@ -235,10 +235,16 @@ public abstract class EngineTransport(
         return schema + "://" + host + port + requestPath + (if (encoded.isNotEmpty()) "?$encoded" else "")
     }
 
-    /** Header list with the configured extra headers and the cookie jar. */
+    /**
+     * The URL cookies of this transport are scoped by: its host and path, with `https` when
+     * secure (cookies treat `ws`/`wss` like `http`/`https`).
+     */
+    internal val cookieUrl: String get() = createUri(if (options.secure) "https" else "http", emptyMap())
+
+    /** Header list with the configured extra headers and the cookies of the jar that match [cookieUrl]. */
     protected fun requestHeaders(): MutableList<Pair<String, String>> {
         val headers = options.extraHeaders.entries.mapTo(ArrayList()) { it.key to it.value }
-        options.cookieJar?.cookieHeader(requestPath)?.let { headers.add("cookie" to it) }
+        options.cookieJar?.cookieHeader(cookieUrl)?.let { headers.add("cookie" to it) }
         return headers
     }
 
