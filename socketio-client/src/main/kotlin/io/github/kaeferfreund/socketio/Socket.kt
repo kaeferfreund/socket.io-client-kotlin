@@ -94,7 +94,10 @@ public class Socket internal constructor(
         val withError: Boolean,
         val callback: (Throwable?, List<SocketIOValue>) -> Unit,
         var timer: Cancellable? = null,
-    )
+    ) {
+        /** Whether its packet went to the transport; only then can an answer be genuine. */
+        var sent = false
+    }
 
     // ---- Listeners (thread-safe, not protocol state). -------------------------------------------
 
@@ -460,7 +463,11 @@ public class Socket internal constructor(
 
     private fun onack(packet: SocketIOPacket) {
         val id = packet.id ?: return
-        val entry = acks.remove(id) ?: return
+        // JavaScript accepts an answer for any registered id. An emit still in the send buffer, or
+        // a volatile one that was dropped, never reached the server, so its "answer" is forged:
+        // ignore it, and keep the callback for the real answer or the timeout.
+        val entry = acks[id]?.takeIf { it.sent } ?: return
+        acks.remove(id)
         entry.timer?.cancel()
         updatePending()
         val args = (packet.data as? SocketIOValue.Array)?.items ?: emptyList()
@@ -492,6 +499,7 @@ public class Socket internal constructor(
         updatePending()
         for (item in buffered) {
             notifyOutgoingListeners(item.event)
+            item.packet.id?.let { acks[it]?.sent = true }
             packet(item.packet, item.compress)
             intercept { it.onSent(item.event) }
         }
@@ -623,6 +631,7 @@ public class Socket internal constructor(
 
             isConnected -> {
                 notifyOutgoingListeners(outgoing)
+                id?.let { acks[it]?.sent = true }
                 packet(packet, flags.compress)
                 intercept { it.onSent(outgoing) }
             }
