@@ -129,7 +129,7 @@ has a different type:
 | `obj` | `Map<String, SocketIOValue>?` |
 | `array` | `List<SocketIOValue>?` |
 | `isNull`, `containsBinary` | `Boolean` |
-| `toKotlin()` | Plain `null`/`Boolean`/`Long`/`Double`/`String`/`ByteArray`/`List`/`Map` |
+| `toKotlin()` | Plain `null`/`Boolean`/`Long`/`Double`/`String`/`ByteArray`/`List`/`Map`; an attachment referenced several times is one shared `ByteArray` |
 
 `SocketIOValue.Object` and `SocketIOValue.Array` also support `value["key"]` and
 `value[index]`. Numbers follow JavaScript: an integral value is stored as a `Long`,

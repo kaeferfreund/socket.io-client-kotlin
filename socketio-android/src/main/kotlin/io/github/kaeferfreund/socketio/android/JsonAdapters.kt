@@ -6,27 +6,37 @@ import io.github.kaeferfreund.socketio.parser.SocketIOValue
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.Reader
+import java.util.IdentityHashMap
 
 /**
  * Converts to `org.json` types: objects become [JSONObject], arrays
  * [JSONArray], `null` becomes [JSONObject.NULL]. Binary data has no JSON
- * form and is written as a `ByteArray` value. Runs on the heap
- * ([DeepRecursiveFunction]), so a deeply nested payload cannot overflow the stack.
+ * form and is written as a `ByteArray` value, copied once per
+ * [SocketIOValue.Binary] instance: where the same instance occurs several
+ * times (a received attachment referenced by several placeholders), every
+ * occurrence is the same array, as JavaScript hands out the same `Buffer`.
+ * Runs on the heap ([DeepRecursiveFunction]), so a deeply nested payload
+ * cannot overflow the stack.
  */
-public fun SocketIOValue.toJson(): Any = toOrgJson(this)
+public fun SocketIOValue.toJson(): Any = OrgJsonConversion().convert(this)
 
-private val toOrgJson =
-    DeepRecursiveFunction<SocketIOValue, Any> { value ->
-        when (value) {
-            is SocketIOValue.Null -> JSONObject.NULL
-            is SocketIOValue.Bool -> value.value
-            is SocketIOValue.Number -> value.value
-            is SocketIOValue.Text -> value.value
-            is SocketIOValue.Binary -> value.bytes
-            is SocketIOValue.Array -> JSONArray().also { array -> for (item in value.items) array.put(callRecursive(item)) }
-            is SocketIOValue.Object -> JSONObject().also { obj -> for ((key, item) in value.fields) obj.put(key, callRecursive(item)) }
+/** One conversion; its copies are shared so a peer cannot multiply an attachment by repeating its placeholder. */
+private class OrgJsonConversion {
+    private val copies = IdentityHashMap<SocketIOValue.Binary, ByteArray>()
+
+    val convert =
+        DeepRecursiveFunction<SocketIOValue, Any> { value ->
+            when (value) {
+                is SocketIOValue.Null -> JSONObject.NULL
+                is SocketIOValue.Bool -> value.value
+                is SocketIOValue.Number -> value.value
+                is SocketIOValue.Text -> value.value
+                is SocketIOValue.Binary -> copies.getOrPut(value) { value.bytes }
+                is SocketIOValue.Array -> JSONArray().also { array -> for (item in value.items) array.put(callRecursive(item)) }
+                is SocketIOValue.Object -> JSONObject().also { obj -> for ((key, item) in value.fields) obj.put(key, callRecursive(item)) }
+            }
         }
-    }
+}
 
 /** This object as a [JSONObject]. */
 public fun SocketIOValue.Object.toJSONObject(): JSONObject = toJson() as JSONObject

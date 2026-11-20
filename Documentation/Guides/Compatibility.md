@@ -109,3 +109,9 @@ the JavaScript client would send the same object.
 Other conversions: `Date` and `Instant` become ISO-8601 strings like a JavaScript
 `Date`; enums become their name; `ByteArray` and `ByteBuffer` become binary
 attachments. Other types are rejected; see [Events](Events.md) for the full table.
+
+**Binary data.** Values are immutable, so `bytes` returns a fresh copy on every
+read. `toKotlin()` and the Android `toJson()` copy each attachment once per
+conversion and reuse that array wherever the packet references it, as
+JavaScript reuses the one `Buffer`; a server repeating a placeholder therefore
+cannot multiply an attachment in memory beyond `maxBinaryPacketBytes`.
