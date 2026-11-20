@@ -239,13 +239,25 @@ public class SocketManager(
         nsp: String = "/",
         options: SocketOptions = SocketOptions.DEFAULT,
         setup: (Socket.() -> Unit)? = null,
-    ): Socket {
+    ): Socket = socket(nsp, options, setup, reuse = true)!!
+
+    /**
+     * [socket], or `null` without side effects when [nsp] already has a socket and
+     * [reuse] is `false`: creating the socket claims the namespace atomically.
+     */
+    internal fun socket(
+        nsp: String,
+        options: SocketOptions,
+        setup: (Socket.() -> Unit)?,
+        reuse: Boolean,
+    ): Socket? {
         var created = false
         val socket =
             nsps.computeIfAbsent(nsp) {
                 created = true
                 Socket(this, nsp, options)
             }
+        if (!created && !reuse) return null
         if (created) setup?.invoke(socket)
         if (created) {
             if (this.options.autoConnect) socket.connect()

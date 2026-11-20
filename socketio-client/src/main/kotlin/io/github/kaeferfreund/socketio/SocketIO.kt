@@ -42,23 +42,21 @@ public object SocketIO {
         setup: (Socket.() -> Unit)? = null,
     ): Socket {
         val parsed = url(uri, options.engine.path)
-        val cached = cache[parsed.id]?.takeUnless { it.isClosed }
-        val sameNamespace = cached != null && parsed.path in cached.sockets
-        val newConnection = options.forceNew || !options.multiplex || sameNamespace
         var effective = options
         if (parsed.query.isNotEmpty() && options.engine.query.isEmpty()) {
             effective = options.newBuilder().apply { query = EngineUri.decodeQuery(parsed.query) }.build()
         }
+        if (options.forceNew || !options.multiplex) return SocketManager(parsed.source, effective).socket(parsed.path, socketOptions, setup)
+        // A manager closed by the application is replaced, never handed out again.
         val manager =
-            if (newConnection) {
-                SocketManager(parsed.source, effective)
-            } else {
-                // A manager closed by the application is replaced, never handed out again.
-                cache.compute(parsed.id) { _, existing ->
-                    if (existing == null || existing.isClosed) SocketManager(parsed.source, effective) else existing
-                }!!
-            }
-        return manager.socket(parsed.path, socketOptions, setup)
+            cache.compute(parsed.id) { _, existing ->
+                if (existing == null || existing.isClosed) SocketManager(parsed.source, effective) else existing
+            }!!
+        // Claiming the namespace is atomic, so of concurrent lookups for one namespace only one
+        // gets the cached manager; JavaScript, single-threaded, cannot interleave check and creation.
+        // The others open a new connection, as a later lookup does when the namespace is taken.
+        return manager.socket(parsed.path, socketOptions, setup, reuse = false)
+            ?: SocketManager(parsed.source, effective).socket(parsed.path, socketOptions, setup)
     }
 
     /** Alias of [io] (`connect`). */
