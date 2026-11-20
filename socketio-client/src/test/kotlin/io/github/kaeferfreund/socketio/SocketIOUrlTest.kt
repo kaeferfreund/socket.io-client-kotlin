@@ -233,6 +233,40 @@ class SocketIOUrlTest {
         first.manager.close()
     }
 
+    // A later call that passes neither options nor a query has nothing that could be ignored.
+    @Test
+    fun reusingACachedManagerWithoutOptionsOrQueryLogsNoWarning() {
+        val warnings = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val logger =
+            object : SocketLogger {
+                override fun isLoggable(level: LogLevel) = true
+
+                override fun log(
+                    level: LogLevel,
+                    tag: String,
+                    message: String,
+                    error: Throwable?,
+                ) {
+                    if (level == LogLevel.WARN) warnings += message
+                }
+            }
+        // The creator's query came from its URL; the later call has none.
+        val first = SocketIO.io("http://localhost:3213/?token=a", lazyOptions { this.logger = logger })
+        val second = SocketIO.io("http://localhost:3213/admin")
+        assertSame(first.manager, second.manager)
+        // The creator passed its own options; the later call none.
+        val third = SocketIO.io("http://localhost:3214/", lazyOptions { this.logger = logger })
+        val fourth = SocketIO.io("http://localhost:3214/admin")
+        assertSame(third.manager, fourth.manager)
+        assertEquals(emptyList<String>(), warnings)
+        // A query of the later call that the cached manager does not have is still reported.
+        val fifth = SocketIO.io("http://localhost:3214/other?token=b")
+        assertSame(third.manager, fifth.manager)
+        assertEquals(1, warnings.size, "$warnings")
+        first.manager.close()
+        third.manager.close()
+    }
+
     @Test
     fun aClosedCachedManagerIsReplaced() {
         val first = SocketIO.io("http://localhost:3212/a", lazyOptions())

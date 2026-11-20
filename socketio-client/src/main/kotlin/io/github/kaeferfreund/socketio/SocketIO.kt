@@ -43,7 +43,8 @@ public object SocketIO {
      *
      * A reused manager keeps the options of the call that created it; [options]
      * of this call, and the query in [uri], are then ignored, as in
-     * JavaScript. When they are not the creator's, a warning is logged to the
+     * JavaScript. When this call passes options other than the default and the
+     * creator's, or a query the creator did not have, a warning is logged to the
      * loggers of both. Pass `forceNew = true` (or use an explicit
      * [SocketManager]) for a connection with its own TLS settings, headers or
      * credentials. A cached manager stays cached until it is closed, with
@@ -81,7 +82,10 @@ public object SocketIO {
         val socket =
             cached.manager.socket(parsed.path, socketOptions, setup, reuse = false)
                 ?: return SocketManager(parsed.source, effective).socket(parsed.path, socketOptions, setup)
-        if (options !== cached.options || effective.engine.query != cached.query) warnIgnoredOptions(parsed.id, options, cached.manager)
+        // Only what this call supplied can be ignored: the default options, or no query, ask for nothing.
+        val ignoredOptions = options !== SocketManagerOptions.DEFAULT && options !== cached.options
+        val ignoredQuery = effective.engine.query.isNotEmpty() && effective.engine.query != cached.query
+        if (ignoredOptions || ignoredQuery) warnIgnoredOptions(parsed.id, options, cached.manager)
         return socket
     }
 
