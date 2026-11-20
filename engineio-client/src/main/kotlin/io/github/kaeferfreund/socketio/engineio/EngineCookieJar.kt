@@ -174,14 +174,15 @@ public class EngineCookieJar(
         /**
          * The cookie's path (RFC 6265 5.2.4): the last `Path` attribute when it starts
          * with `/`, otherwise the default path of [requestPath]. Attributes are split
-         * on `"; "` like the JavaScript parser splits the cookie itself.
+         * on `;` with optional whitespace (RFC 6265 5.2), so `;Path=/x` counts too; the
+         * JavaScript parser of name, value and expiry splits on `"; "` only.
          */
         fun cookiePath(
             setCookie: String,
             requestPath: String,
         ): String {
             var path: String? = null
-            for (attribute in setCookie.split("; ").drop(1)) {
+            for (attribute in setCookie.split(';').drop(1)) {
                 val i = attribute.indexOf('=')
                 if (i >= 0 && attribute.substring(0, i).trim().equals("Path", ignoreCase = true)) path = attribute.substring(i + 1).trim()
             }

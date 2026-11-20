@@ -295,6 +295,16 @@ class EngineLifecycleHardeningTest {
     }
 
     @Test
+    fun aPathAttributeIsFoundWithoutASpaceAfterTheSemicolon() {
+        val jar = EngineCookieJar()
+        jar.parseCookies(listOf("tight=1; HttpOnly;Path=/a/sub", "spaced=2; Secure ;  Path=/a/sub"), "/a/")
+        assertEquals("tight=1; spaced=2", jar.cookieHeader("/a/"))
+        assertEquals("tight=1; spaced=2", jar.cookieHeader("/a/sub/"))
+        // Without the attribute, the default path "/a" would match here.
+        assertEquals(null, jar.cookieHeader("/a/other/"))
+    }
+
+    @Test
     fun theCookieJarKeepsAtMostABrowserSizedNumberOfCookies() {
         val jar = EngineCookieJar()
         jar.parseCookies(List(1000) { "c$it=$it" })

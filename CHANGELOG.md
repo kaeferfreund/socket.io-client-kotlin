@@ -22,6 +22,8 @@ API are unchanged; every difference from the JavaScript client is listed in the
   pending requests; at most one unsent pong is buffered; the cookie jar keeps
   browser limits (180 cookies, 4096 bytes each) and honours `Path` across
   transports; polling packets are handled as they are decoded.
+- Engine.IO: a cookie's `Path` attribute is also recognised after a `;` without
+  a space.
 - Socket.IO: `clearRecoveryState()` also drops the previous user's pending
   emits, retries and early events, as the user-switch guide relies on;
   acknowledgements are accepted only for emits that were sent; a namespace

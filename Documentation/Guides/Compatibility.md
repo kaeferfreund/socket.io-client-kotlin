@@ -112,7 +112,8 @@ bound. A well-behaved server never notices these differences.
   different paths (`TransportOverrides.path`), a cookie set by one transport
   reaches another only if its `Path` matches that path as in a browser. On the
   path that set it, a cookie is always sent back, so connections whose
-  transports share a path behave as in JavaScript.
+  transports share a path behave as in JavaScript. `Path` is recognised after
+  any `;`, with or without a space, as RFC 6265 parses attributes.
 - **Polling responses.** The packets of a polling response are decoded and
   handled one at a time; JavaScript first decodes the whole response into a
   list.
