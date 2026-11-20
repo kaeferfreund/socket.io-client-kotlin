@@ -394,6 +394,59 @@ class OkHttpEngineClientsTest {
         }
     }
 
+    // RFC 6455 4.1: an extension the client did not offer fails the connection. With compression
+    // disabled the client offers none, so a compressed message must never be inflated.
+    @Test
+    fun anUnrequestedPerMessageDeflateResponseFailsTheConnection() {
+        server.enqueue(
+            MockResponse.Builder()
+                .addHeader("Sec-WebSocket-Extensions", "permessage-deflate")
+                .webSocketUpgrade(
+                    object : WebSocketListener() {
+                        override fun onOpen(
+                            webSocket: WebSocket,
+                            response: Response,
+                        ) {
+                            webSocket.send("4" + "x".repeat(4096))
+                        }
+                    },
+                ).build(),
+        )
+        val events = LinkedBlockingQueue<String>()
+        OkHttpEngineClients().connect(
+            EngineWebSocketRequest(server.url("/socket.io/").toString().replace("http", "ws"), emptyList(), emptyList(), null),
+            object : EngineWebSocketListener {
+                override fun onOpen(responseHeaders: List<Pair<String, String>>) {
+                    events.put("open")
+                }
+
+                override fun onMessage(text: String) {
+                    events.put("message")
+                }
+
+                override fun onMessage(bytes: ByteArray) {
+                    events.put("message")
+                }
+
+                override fun onClosed(
+                    code: Int,
+                    reason: String,
+                ) {
+                    events.put("closed:$code")
+                }
+
+                override fun onFailure(
+                    error: Throwable,
+                    httpStatus: Int?,
+                ) {
+                    events.put("failure:${error.javaClass.simpleName}")
+                }
+            },
+        )
+        assertEquals("failure:ProtocolException", events.poll(5, TimeUnit.SECONDS))
+        assertNull(server.takeRequest().headers["Sec-WebSocket-Extensions"])
+    }
+
     @Test
     fun isDiscoveredThroughTheServiceLoader() {
         val clients = EngineClients.discover()

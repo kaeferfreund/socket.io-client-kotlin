@@ -160,9 +160,7 @@ public class OkHttpEngineClients(
             // perMessageDeflate disabled: do not even offer the extension. OkHttp skips network
             // interceptors for WebSocket upgrades, so an application interceptor removes the header.
             wsBuilder.minWebSocketMessageToCompress(Long.MAX_VALUE)
-            wsBuilder.addInterceptor { chain ->
-                chain.proceed(chain.request().newBuilder().removeHeader("Sec-WebSocket-Extensions").build())
-            }
+            wsBuilder.addInterceptor(NoWebSocketExtensions)
         }
         val wsClient = wsBuilder.build()
         val socket =
@@ -237,6 +235,27 @@ public class OkHttpEngineClients(
             }
             return chain.proceed(request)
         }
+    }
+
+    /**
+     * Offers no WebSocket extension and fails a handshake whose response accepts one anyway
+     * (RFC 6455, section 4.1): OkHttp would otherwise inflate permessage-deflate messages the
+     * client never asked for.
+     */
+    private object NoWebSocketExtensions : Interceptor {
+        override fun intercept(chain: Interceptor.Chain): Response {
+            val response = chain.proceed(chain.request().newBuilder().removeHeader(EXTENSIONS).build())
+            if (response.code == HTTP_SWITCHING_PROTOCOLS && response.headers(EXTENSIONS).any { it.isNotBlank() }) {
+                // Drop the upgraded connection: it must neither be used nor return to the pool.
+                chain.call().cancel()
+                response.close()
+                throw ProtocolException("the server accepted a WebSocket extension that was not offered")
+            }
+            return response
+        }
+
+        private const val EXTENSIONS = "Sec-WebSocket-Extensions"
+        private const val HTTP_SWITCHING_PROTOCOLS = 101
     }
 
     /** Runs [report] on OkHttp's dispatcher threads, never inside the caller's stack. */
