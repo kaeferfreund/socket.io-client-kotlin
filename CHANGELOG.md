@@ -36,6 +36,10 @@ API are unchanged; every difference from the JavaScript client is listed in the
 - Parser: a repeated attachment is copied once per conversion instead of once
   per reference, and rejected binary input is not copied before the byte-limit
   check. A payload too deep to decode reaches `onSerializable`'s `onError`.
+- Serialization: `decodeAs`, `emitSerializableWithAck` and `serializableAck`
+  also report a payload too deep to decode as a `SerializationException`
+  instead of a `StackOverflowError`; `serializableAck` no longer turns VM errors
+  such as `OutOfMemoryError` into a failed `Result`.
 - OkHttp/TLS: `TlsPolicy` keeps the trust manager and pins of a supplied base
   client; cross-origin polling redirects are refused before connecting; a
   WebSocket handshake that enables an extension the client did not offer fails;
