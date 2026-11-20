@@ -60,6 +60,27 @@ class SocketApiTest {
             h.close()
         }
 
+    // On an open manager, socket() with autoConnect and a connect() right after it each send a
+    // CONNECT, as in JavaScript. The server answers both and routes the client's packets to the
+    // second socket, so the socket ends on the second id, after two connect events.
+    @Test
+    fun twoConnectsSentOnOneConnectionAreBothAnswered() =
+        runClientTest {
+            val h = clientHarness { namespace("/admin") }
+            val manager = h.manager()
+            h.settle()
+            var connects = 0
+            val socket = manager.socket("/admin") { onConnect { connects++ } }
+            socket.connect()
+            h.settle()
+            val ids = h.server.namespace("/admin").clients.map { it.id }
+            assertEquals(2, ids.size, "$ids")
+            assertEquals(ids.last(), socket.id)
+            assertEquals(2, connects)
+            assertTrue(socket.connected)
+            h.close()
+        }
+
     // A string CONNECT_ERROR payload is the message. As in socket.io-parser, `null` is not a
     // valid CONNECT_ERROR payload (isObject(null) is false): it is a parse error, not a refusal.
     @Test

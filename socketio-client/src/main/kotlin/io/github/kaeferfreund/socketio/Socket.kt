@@ -66,8 +66,11 @@ public class Socket internal constructor(
     private var connectGeneration = 0
     private var providerJob: Job? = null
 
-    /** Whether this socket sent a CONNECT on the current connection that is not answered yet. */
-    private var connectSent = false
+    /**
+     * CONNECTs this socket queued on the current connection that are not answered yet. Usually
+     * one; more when connect() runs again before the answer (as in JavaScript, each is answered).
+     */
+    private var pendingConnects = 0
 
     /** Counts ended namespace sessions; an acknowledgement belongs to the session it was received in. */
     private var sessionEpoch = 0L
@@ -274,7 +277,7 @@ public class Socket internal constructor(
         subs?.forEach(Cancellable::cancel)
         subs = null
         activeView = false
-        connectSent = false
+        pendingConnects = 0
         endSession()
         connectGeneration++
         providerJob?.cancel()
@@ -338,7 +341,7 @@ public class Socket internal constructor(
                 data
             }
         packet(SocketIOPacket(SocketIOPacketType.CONNECT, namespace, payload), compress = true)
-        connectSent = true
+        pendingConnects++
     }
 
     private fun onerror(error: Throwable) {
@@ -355,7 +358,7 @@ public class Socket internal constructor(
     ) {
         val wasConnected = connectedState
         connectedState = false
-        connectSent = false
+        pendingConnects = 0
         endSession()
         idState = null
         stateFlow.value = ConnectionState.Disconnected(reason, details)
@@ -425,8 +428,10 @@ public class Socket internal constructor(
                 // JavaScript accepts any CONNECT. Here only the answer to the CONNECT this socket
                 // sent on this connection counts: a peer must not connect the namespace (and
                 // release the send buffer) while the auth provider is still running or after it
-                // failed, nor connect it twice. An empty (v2.x) CONNECT is such an answer too.
-                if (!connectSent) return ignoreUnrequested("CONNECT")
+                // failed, nor connect it more often than it asked. An empty (v2.x) CONNECT is such
+                // an answer too.
+                if (pendingConnects == 0) return ignoreUnrequested("CONNECT")
+                pendingConnects--
                 val data = packet.data as? SocketIOValue.Object
                 val sid = data?.get("sid")?.string
                 if (sid != null && sid.isNotEmpty()) {
@@ -451,7 +456,7 @@ public class Socket internal constructor(
                 // A server sends CONNECT_ERROR only to refuse a CONNECT. JavaScript accepts it at any
                 // time; on a connected socket it destroys the socket but leaves it marked as connected,
                 // so connect() does nothing any more and acknowledgements never fail.
-                if (!connectSent) return ignoreUnrequested("CONNECT_ERROR")
+                if (pendingConnects == 0) return ignoreUnrequested("CONNECT_ERROR")
                 destroy()
                 val data = packet.data
                 val error =
@@ -558,7 +563,6 @@ public class Socket internal constructor(
         id: String,
         newPid: String?,
     ) {
-        connectSent = false
         idState = id
         recoveredState = newPid != null && pid == newPid
         pid = newPid
