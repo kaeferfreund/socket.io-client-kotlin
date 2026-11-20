@@ -139,7 +139,7 @@ public class SocketIODecoder(
     public fun add(data: EngineIOData): SocketIOPacket? =
         when (data) {
             is EngineIOData.Text -> add(data.value)
-            is EngineIOData.Binary -> addAttachment(data.bytes)
+            is EngineIOData.Binary -> addAttachment(data.size) { data.bytes }
         }
 
     /** Decodes one text message. */
@@ -158,15 +158,19 @@ public class SocketIODecoder(
     }
 
     /** Decodes one binary attachment. The bytes are copied. */
-    public fun add(bytes: ByteArray): SocketIOPacket? = addAttachment(bytes.copyOf())
+    public fun add(bytes: ByteArray): SocketIOPacket? = addAttachment(bytes.size) { bytes.copyOf() }
 
-    private fun addAttachment(bytes: ByteArray): SocketIOPacket? {
+    /** Checks the decoder state and the byte budget on [size] first, so rejected input is never copied. */
+    private inline fun addAttachment(
+        size: Int,
+        copy: () -> ByteArray,
+    ): SocketIOPacket? {
         val reconstruction = pending ?: throw SocketIOParseException("got binary data when not reconstructing a packet")
-        reconstruction.bytes += bytes.size
+        reconstruction.bytes += size
         if (reconstruction.bytes > options.maxBinaryPacketBytes) {
             throw SocketIOParseException("binary packet exceeds maxBinaryPacketBytes (${options.maxBinaryPacketBytes})")
         }
-        reconstruction.buffers.add(SocketIOValue.Binary.wrap(bytes))
+        reconstruction.buffers.add(SocketIOValue.Binary.wrap(copy()))
         if (reconstruction.buffers.size < reconstruction.attachments) return null
         val buffers = reconstruction.buffers
         val data =
