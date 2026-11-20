@@ -3843,7 +3843,7 @@
       "id": "KT-OKHTTP",
       "kind": "kotlin-extension",
       "upstream_ids": [],
-      "assertions": "The OkHttp stack sends headers and bodies, reports error statuses, bounds response bodies while reading, applies the request timeout but no read timeout (long polls wait), never follows an HTTPS-to-HTTP redirect, exchanges WebSocket frames and reports the close and a failed handshake's status, offers permessage-deflate only when compression is enabled, is discovered through ServiceLoader, and reports a dropped connection as a failure; the `okHttp { }` builder applies the base client and every `configure` block. A request or WebSocket OkHttp cannot build (a header value or URL it refuses) fails through the callback instead of throwing. Polling follows a redirect only within its origin and refuses one to another origin without sending anything there; the WebSocket handshake follows no redirect.",
+      "assertions": "The OkHttp stack sends headers and bodies, reports error statuses, bounds response bodies while reading, applies the request timeout but no read timeout (long polls wait), never follows an HTTPS-to-HTTP redirect, exchanges WebSocket frames and reports the close and a failed handshake's status, offers permessage-deflate only when compression is enabled, is discovered through ServiceLoader, and reports a dropped connection as a failure; the `okHttp { }` builder applies the base client and every `configure` block. A request or WebSocket OkHttp cannot build (a header value or URL it refuses) fails through the callback instead of throwing. Polling follows redirects with OkHttp's method rules, also to another origin, but never from HTTPS to HTTP; on a change of origin it drops Authorization and Proxy-Authorization and rebuilds Cookie by RFC 6265 cookie rules, an explicit Cookie header goes only to the first host, and other headers follow. With a client certificate configured it refuses a redirect to another origin, and with pins one to a host no pin covers, without sending anything there; the WebSocket handshake follows no redirect.",
       "tests": [
         {
           "path": "socketio-okhttp/src/test/kotlin/io/github/kaeferfreund/socketio/okhttp/OkHttpEngineClientsTest.kt",
@@ -3900,6 +3900,34 @@
         {
           "path": "socketio-okhttp/src/test/kotlin/io/github/kaeferfreund/socketio/okhttp/OkHttpEngineClientsTest.kt",
           "symbol": "io.github.kaeferfreund.socketio.okhttp.OkHttpEngineClientsTest.followsRedirectsOnlyWithinTheOrigin"
+        },
+        {
+          "path": "socketio-okhttp/src/test/kotlin/io/github/kaeferfreund/socketio/okhttp/CrossOriginRedirectTest.kt",
+          "symbol": "io.github.kaeferfreund.socketio.okhttp.CrossOriginRedirectTest.anotherPortOfTheSameHostKeepsCookiesButNotAuthorization"
+        },
+        {
+          "path": "socketio-okhttp/src/test/kotlin/io/github/kaeferfreund/socketio/okhttp/CrossOriginRedirectTest.kt",
+          "symbol": "io.github.kaeferfreund.socketio.okhttp.CrossOriginRedirectTest.aForeignHostGetsNoCredentialsButTheOtherHeaders"
+        },
+        {
+          "path": "socketio-okhttp/src/test/kotlin/io/github/kaeferfreund/socketio/okhttp/CrossOriginRedirectTest.kt",
+          "symbol": "io.github.kaeferfreund.socketio.okhttp.CrossOriginRedirectTest.aSiblingHostGetsWhatTheCookiesAnswerForIt"
+        },
+        {
+          "path": "socketio-okhttp/src/test/kotlin/io/github/kaeferfreund/socketio/okhttp/CrossOriginRedirectTest.kt",
+          "symbol": "io.github.kaeferfreund.socketio.okhttp.CrossOriginRedirectTest.withoutRedirectCookiesTheCookieHeaderFollowsOnlyToTheSameHost"
+        },
+        {
+          "path": "socketio-okhttp/src/test/kotlin/io/github/kaeferfreund/socketio/okhttp/CrossOriginRedirectTest.kt",
+          "symbol": "io.github.kaeferfreund.socketio.okhttp.CrossOriginRedirectTest.httpsToHttpIsNeverFollowed"
+        },
+        {
+          "path": "socketio-okhttp/src/test/kotlin/io/github/kaeferfreund/socketio/okhttp/CrossOriginRedirectTest.kt",
+          "symbol": "io.github.kaeferfreund.socketio.okhttp.CrossOriginRedirectTest.withAClientCertificateARedirectToAnotherOriginIsRefused"
+        },
+        {
+          "path": "socketio-okhttp/src/test/kotlin/io/github/kaeferfreund/socketio/okhttp/CrossOriginRedirectTest.kt",
+          "symbol": "io.github.kaeferfreund.socketio.okhttp.CrossOriginRedirectTest.withPinsARedirectToAnUnpinnedHostIsRefused"
         },
         {
           "path": "socketio-okhttp/src/test/kotlin/io/github/kaeferfreund/socketio/okhttp/OkHttpEngineClientsTest.kt",
