@@ -99,11 +99,15 @@ public object EngineUri {
         return checkNotNull(match(uri, uri, bracketed = false))
     }
 
-    /** Indices of `[` and `]` when both lie in the authority, before the first `/`, `?`, `#` or `\` after the scheme. */
+    /**
+     * Indices of `[` and `]` when both lie in the host part of the authority: after its last `@`
+     * and before the first `/`, `?`, `#` or `\` after the scheme.
+     */
     private fun ipv6Literal(uri: String): Pair<Int, Int>? {
         val start = SCHEME_PREFIX.find(uri)?.range?.last?.plus(1) ?: 0
         val end = uri.indexOfAny(AUTHORITY_END, start).let { if (it == -1) uri.length else it }
-        val b = uri.indexOf('[', start)
+        val host = uri.lastIndexOf('@', end - 1).let { if (it < start) start else it + 1 }
+        val b = uri.indexOf('[', host)
         if (b == -1 || b >= end) return null
         val e = uri.indexOf(']', b)
         return if (e == -1 || e >= end) null else b to e

@@ -73,6 +73,22 @@ class EngineUriTest {
     }
 
     @Test
+    fun bracketsInTheUserInfoBeforeAnIpv6HostDoNotHideTheHost() {
+        val parsed = EngineUri.parse("https://u[x]@[::1]/")
+        assertEquals("::1", parsed.host)
+        assertEquals("u[x]", parsed.user)
+        assertEquals("/", parsed.path)
+        assertTrue(parsed.ipv6)
+
+        val withPort = EngineUri.parse("https://u[x]@[::1]:3000/p")
+        assertEquals("::1", withPort.host)
+        assertEquals("3000", withPort.port)
+        assertEquals("u[x]", withPort.user)
+        assertEquals("/p", withPort.path)
+        assertTrue(withPort.ipv6)
+    }
+
+    @Test
     fun ipv6HostsStillParse() {
         val bare = EngineUri.parse("[::1]")
         assertEquals("::1", bare.host)
