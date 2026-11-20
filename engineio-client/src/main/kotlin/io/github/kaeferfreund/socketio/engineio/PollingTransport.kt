@@ -45,9 +45,13 @@ public class PollingTransport(
         poll()
     }
 
+    /** Listeners of a pause that waits for the pending poll or write. */
+    private val pauseWaits = ArrayList<Cancellable>()
+
     override fun pause(onPause: () -> Unit) {
         readyState = TransportState.PAUSING
         val pause = {
+            pauseWaits.clear()
             readyState = TransportState.PAUSED
             onPause()
         }
@@ -55,19 +59,32 @@ public class PollingTransport(
             var total = 0
             if (polling) {
                 total++
-                events.once<TransportEvent.PollComplete, TransportEvent> {
-                    if (--total == 0) pause()
-                }
+                pauseWaits +=
+                    events.once<TransportEvent.PollComplete, TransportEvent> {
+                        if (--total == 0) pause()
+                    }
             }
             if (!writable) {
                 total++
-                events.once<TransportEvent.Drain, TransportEvent> {
-                    if (--total == 0) pause()
-                }
+                pauseWaits +=
+                    events.once<TransportEvent.Drain, TransportEvent> {
+                        if (--total == 0) pause()
+                    }
             }
         } else {
             pause()
         }
+    }
+
+    // JavaScript cannot undo a pause: after a failed upgrade probe it stays paused and stops
+    // polling, so the connection stalls until the heartbeat deadline.
+    override fun resume() {
+        if (readyState != TransportState.PAUSING && readyState != TransportState.PAUSED) return
+        pauseWaits.forEach(Cancellable::cancel)
+        pauseWaits.clear()
+        readyState = TransportState.OPEN
+        // A poll still in flight polls again when it completes; a write in flight drains as usual.
+        if (!polling) poll()
     }
 
     private fun poll() {

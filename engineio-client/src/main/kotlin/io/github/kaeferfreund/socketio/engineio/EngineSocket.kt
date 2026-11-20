@@ -456,6 +456,9 @@ public class EngineSocket(
                 return
             }
         var failed = false
+
+        // Whether this probe set `upgrading` and paused the current transport.
+        var pausing = false
         priorWebsocketSuccess.set(false)
         val subscriptions = ArrayList<Cancellable>()
         val cleanup = {
@@ -469,6 +472,17 @@ public class EngineSocket(
             cleanup()
             transport?.close()
             transport = null
+            if (pausing) {
+                // JavaScript leaves `upgrading` set and the polling transport paused when the
+                // probe fails after its pong: nothing is written or polled any more, and close()
+                // waits for an upgrade event that already happened. The upgrade is undone instead.
+                pausing = false
+                upgrading = false
+                if (readyState == EngineState.OPEN || readyState == EngineState.CLOSING) {
+                    this.transport?.resume()
+                    flush()
+                }
+            }
         }
 
         val onError = { reason: String ->
@@ -487,6 +501,7 @@ public class EngineSocket(
                     val msg = event.packet
                     if (msg.type == EngineIOPacketType.PONG && msg.text == "probe") {
                         upgrading = true
+                        pausing = true
                         events.emit(EngineEvent.Upgrading(probeTransport))
                         if (transport == null) return@once
                         priorWebsocketSuccess.set(probeTransport.name == WebSocketTransport.NAME)
@@ -498,6 +513,7 @@ public class EngineSocket(
                             probeTransport.send(listOf(EngineIOPacket(EngineIOPacketType.UPGRADE)))
                             events.emit(EngineEvent.Upgrade(probeTransport))
                             transport = null
+                            pausing = false
                             upgrading = false
                             flush()
                         }

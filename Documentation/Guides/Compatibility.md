@@ -107,6 +107,11 @@ bound. A well-behaved server never notices these differences.
   still sent and the engine then closes, but it does not become open again: no
   `open` event, no upgrade probe, and pings do not extend its heartbeat
   deadline. JavaScript reopens the engine.
+- **Failed upgrade.** When a probe fails after it answered `probe` and the
+  polling transport is already pausing for the upgrade, the upgrade is undone:
+  polling and writing resume, and `close()` no longer waits for the upgrade.
+  JavaScript stays paused until the heartbeat deadline ends the connection, and
+  a `close()` in the meantime waits for it.
 - **Heartbeat replies.** While a write is pending, one buffered pong answers
   every ping that arrives. JavaScript buffers one pong per ping, so a server
   that stalls the write could grow the buffer without bound.

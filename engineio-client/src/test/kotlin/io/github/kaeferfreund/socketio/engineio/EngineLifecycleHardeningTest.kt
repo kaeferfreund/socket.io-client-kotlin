@@ -263,6 +263,75 @@ class EngineLifecycleHardeningTest {
             s.executor.shutdown()
         }
 
+    @Test
+    fun aProbeThatFailsWhileThePollingTransportPausesLeavesPollingUsable() =
+        runTest {
+            val s = setup()
+            s.http.answerPoll(handshake())
+            s.settle()
+            s.run { s.engine.send("before") }
+            val write = s.http.pending("POST").single()
+            val poll = s.http.pending("GET").single()
+            val probe = s.ws.connections.single()
+            probe.listener.onOpen(emptyList())
+            s.settle()
+            probe.listener.onMessage("3probe")
+            s.settle()
+            assertTrue(s.engine.upgrading)
+            assertEquals(TransportState.PAUSING, s.engine.transport!!.readyState)
+            // The server drops the probe right after answering it.
+            probe.listener.onClosed(1000, "")
+            s.settle()
+            assertFalse(s.engine.upgrading, "a failed probe left the engine upgrading")
+            val polling = s.engine.transport!!
+            assertEquals(PollingTransport.NAME, polling.name)
+            assertEquals(TransportState.OPEN, polling.readyState)
+            // The poll and the write that were pending complete, and polling goes on.
+            poll.respond(EngineHttpResponse(200, "4hello"))
+            s.settle()
+            assertEquals(1, s.http.pending("GET").size, "polling stopped after the failed probe")
+            write.respond(EngineHttpResponse(200, "ok"))
+            s.settle()
+            s.run { s.engine.send("after") }
+            assertEquals("4after", s.http.pending("POST").single().request.body)
+            s.http.pending("POST").single().respond(EngineHttpResponse(200, "ok"))
+            s.settle()
+            // close() no longer waits for an upgrade that already failed.
+            s.run { s.engine.close() }
+            assertEquals(EngineState.CLOSED, s.engine.readyState)
+            assertEquals(listOf("forced close"), s.closeReasons)
+            s.executor.shutdown()
+        }
+
+    @Test
+    fun aProbeThatFailsAfterThePausingPollCompletedResumesPolling() =
+        runTest {
+            val s = setup()
+            s.http.answerPoll(handshake())
+            s.settle()
+            s.run { s.engine.send("before") }
+            val write = s.http.pending("POST").single()
+            val probe = s.ws.connections.single()
+            probe.listener.onOpen(emptyList())
+            s.settle()
+            probe.listener.onMessage("3probe")
+            s.settle()
+            // The poll completes; the transport still waits for the write before pausing.
+            s.http.answerPoll("6")
+            s.settle()
+            assertTrue(s.http.pending("GET").isEmpty())
+            probe.listener.onFailure(IllegalStateException("reset"), null)
+            s.settle()
+            assertFalse(s.engine.upgrading)
+            assertEquals(TransportState.OPEN, s.engine.transport!!.readyState)
+            assertEquals(1, s.http.pending("GET").size, "polling did not resume after the failed probe")
+            write.respond(EngineHttpResponse(200, "ok"))
+            s.settle()
+            assertEquals(TransportState.OPEN, s.engine.transport!!.readyState)
+            assertEquals(EngineState.OPEN, s.engine.readyState)
+            s.executor.shutdown()
+        }
+
     // ---- Finding: heartbeat replies accumulate -------------------------------------------------
 
     @Test

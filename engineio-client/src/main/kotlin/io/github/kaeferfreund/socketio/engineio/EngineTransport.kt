@@ -176,6 +176,12 @@ public abstract class EngineTransport(
     /** Pauses the transport before an upgrade; only polling needs to. */
     public open fun pause(onPause: () -> Unit) {}
 
+    /**
+     * Undoes a [pause] that has not called back yet, when the upgrade it was for
+     * failed: `onPause` is never called and the transport works as before.
+     */
+    internal open fun resume() {}
+
     protected fun onError(
         reason: String,
         statusCode: Int? = null,
