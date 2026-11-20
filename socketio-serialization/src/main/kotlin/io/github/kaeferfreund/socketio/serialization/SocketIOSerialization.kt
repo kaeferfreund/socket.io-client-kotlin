@@ -8,6 +8,7 @@ import io.github.kaeferfreund.socketio.Subscription
 import io.github.kaeferfreund.socketio.parser.SocketIOJson
 import io.github.kaeferfreund.socketio.parser.SocketIOValue
 import kotlinx.serialization.DeserializationStrategy
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.SerializationStrategy
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -140,7 +141,9 @@ public suspend inline fun <reified T, reified R> Socket.emitSerializableWithAck(
 /**
  * Calls [listener] with the first argument of every [event], decoded as [T].
  * A payload that does not decode is reported to [onError] (by default
- * rethrown, which the manager's listener error handler receives).
+ * rethrown, which the manager's listener error handler receives), including
+ * one nested too deeply for a recursive [T] to decode on the stack, as a
+ * [SerializationException] caused by the `StackOverflowError`.
  */
 public inline fun <reified T> Socket.onSerializable(
     event: String,
@@ -156,6 +159,11 @@ public inline fun <reified T> Socket.onSerializable(
                 @Suppress("TooGenericExceptionCaught") e: Exception,
             ) {
                 onError(incoming, e)
+                return@on
+            } catch (e: StackOverflowError) {
+                // kotlinx.serialization decodes recursive classes on the stack, so a deep enough
+                // payload overflows it. That payload does not decode; other VM errors still propagate.
+                onError(incoming, SerializationException("payload nested too deeply to decode", e))
                 return@on
             }
         listener(decoded, incoming)

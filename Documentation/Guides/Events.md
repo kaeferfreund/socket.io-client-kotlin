@@ -258,7 +258,9 @@ val decoded: ChatMessage? = someEvent[0]?.decodeAs<ChatMessage>()
 
 `onSerializable` decodes the first argument; a payload that does not decode is
 passed to its `onError` parameter (by default rethrown to the manager's
-`listenerErrorHandler`). `serializableAck<T> { result -> }` builds an
+`listenerErrorHandler`). That includes a payload nested too deeply for a recursive
+class to decode, reported as a `SerializationException` caused by the
+`StackOverflowError` that kotlinx.serialization hit. `serializableAck<T> { result -> }` builds an
 `AckCallback` that decodes the first acknowledgement argument. All functions take
 an optional `Json` instance; the default ignores unknown keys. Binary data has no
 JSON form: send `ByteArray` payloads as separate arguments.
