@@ -203,6 +203,13 @@ the KeyChain cannot provide the key (for example after a lock-screen change
 invalidated it), the handshake fails and `connect_error` reports a
 `TransportException` with the TLS error as `cause`; ask for a new alias.
 
+`KeyChainKeyManager` presents the certificate to every server that asks for one
+during a handshake of this manager, whatever certificate authorities the server
+lists, as Android's own KeyChain clients do: servers that accept certificates
+from authorities they do not list keep working. The manager connects only to the
+origin of its URL, since redirects to another origin are refused before any
+connection is made.
+
 ## Network Security Config
 
 `TlsPolicy.systemDefault()` keeps the platform trust manager, so the app's
