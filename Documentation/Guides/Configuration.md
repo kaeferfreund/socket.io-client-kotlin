@@ -340,3 +340,70 @@ val options = SocketManagerOptions {
 ```
 
 Byte counts of the buffers are estimates of retained memory, not wire sizes.
+
+## Hardening for untrusted servers
+
+The defaults above stay unlimited for parity with JavaScript. An app that
+connects to servers it does not control (a public or user-supplied URL, or a
+backend whose compromise must not take the app down with it) should set the
+limits explicitly. The values below are a starting point for chat-sized
+messages; size them from the largest payload your protocol really sends.
+
+```kotlin
+import io.github.kaeferfreund.socketio.SocketBufferLimits
+import io.github.kaeferfreund.socketio.SocketManager
+import io.github.kaeferfreund.socketio.SocketManagerOptions
+import io.github.kaeferfreund.socketio.SocketOptions
+import io.github.kaeferfreund.socketio.engineio.HandshakeLimits
+import io.github.kaeferfreund.socketio.parser.SocketParserOptions
+import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.seconds
+
+val hardened = SocketManagerOptions {
+    // One incoming packet.
+    parserOptions = SocketParserOptions(
+        maxAttachments = 10,
+        maxTextPacketBytes = 1L shl 20, // 1 MiB of header plus JSON
+        maxBinaryPacketBytes = 8L shl 20, // 8 MiB of attachments
+        maxNestingDepth = 64,
+    )
+    // What is kept across packets.
+    bufferLimits = SocketBufferLimits(
+        maxSendBufferPackets = 500,
+        maxSendBufferBytes = 4L shl 20,
+        maxRetryQueuePackets = 500,
+        maxRetryQueueBytes = 4L shl 20,
+        maxReceiveBufferPackets = 100,
+        maxReceiveBufferBytes = 1L shl 20,
+        binaryReconstructionTimeout = 30.seconds,
+    )
+    // Engine.IO: one polling response and the handshake timers.
+    maxPollingResponseBytes = 16L shl 20
+    requestTimeout = 30.seconds
+    handshakeLimits = HandshakeLimits(maxPingInterval = 2.minutes, maxPingTimeout = 2.minutes)
+    // Listener exceptions go to your own reporting instead of the log.
+    listenerErrorHandler = { error -> reportToCrashTool(error) }
+}
+val manager = SocketManager("https://example.com", hardened)
+val socket = manager.socket("/", SocketOptions { ackTimeout = 30.seconds })
+```
+
+- One polling response can batch several packets, and binary attachments travel
+  base64-encoded (a third larger), so keep `maxPollingResponseBytes` above
+  `maxTextPacketBytes` and about 4/3 of `maxBinaryPacketBytes`.
+- `handshakeLimits` must stay above the server's `pingInterval` and
+  `pingTimeout` (Socket.IO defaults: 25 and 20 seconds), or every connection
+  fails with `"invalid handshake"`. Without a bound, a server can announce timers
+  so large that a dead connection is never detected.
+- `ackTimeout` (per socket, or per emit with `timeout(…)`) bounds how long
+  acknowledgement callbacks wait for a server that never answers.
+- On WebSocket the parser limits bound what the client processes, not the
+  message OkHttp reads first; see [Limits](#limits). Where that matters, restrict
+  `transports` to `Transport.POLLING`.
+- Without `listenerErrorHandler`, a listener exception goes to `logger`; if the
+  logger does not log errors (`SocketLogger.NONE`, the JVM default), the
+  exception and its stack trace are printed to standard error. Set a handler
+  when exception messages may contain user data.
+
+A limit that triggers closes the connection with the error described in
+[Limits](#limits), and the manager reconnects with its usual backoff.
