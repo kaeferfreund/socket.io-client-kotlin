@@ -86,6 +86,7 @@ is unchanged:
 | --- | --- | --- |
 | An acknowledgement for an emit that is still in the send buffer, or a volatile emit that was dropped | Completes the callback | Ignored; the callback waits for the real answer or its timeout |
 | A namespace CONNECT with a session id that answers no CONNECT of this socket (for example while the auth provider is still running) | Connects the namespace | Ignored |
+| A namespace CONNECT_ERROR, or a CONNECT without a session id (a v2.x server), that answers no CONNECT of this socket (for example on a connected socket) | Emits `connect_error`; CONNECT_ERROR also destroys the socket but leaves it marked as connected, so `connect()` does nothing | Ignored |
 | `event.ack.send(…)` after the connection that delivered the event closed | Sent on the current connection | Not sent: the new server session numbers its requests from 0 again |
 | Events received before a CONNECT on a connection that then closed | Delivered after the next CONNECT | Dropped |
 | `SocketIO.io` called from several threads for one namespace | Not possible (single-threaded) | Only one caller gets the cached manager; the others get a new connection, as a later call does |

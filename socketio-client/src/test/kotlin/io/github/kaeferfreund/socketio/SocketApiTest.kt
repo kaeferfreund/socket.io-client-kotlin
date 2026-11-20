@@ -37,6 +37,29 @@ class SocketApiTest {
             h.close()
         }
 
+    // A server sends CONNECT_ERROR (and the empty v2.x CONNECT) only as the answer to a CONNECT.
+    // An unrequested one used to destroy a connected socket while it still counted as connected,
+    // so connect() did nothing any more.
+    @Test
+    fun anUnrequestedConnectErrorOrEmptyConnectOnAConnectedSocketIsIgnored() =
+        runClientTest {
+            val h = clientHarness()
+            val errors = ArrayList<Throwable>()
+            val socket = h.manager().socket("/") { onConnectError { errors += it } }
+            h.settle()
+            assertTrue(socket.connected)
+            val id = socket.id
+            val session = h.server.engine.sessions.values.single()
+            session.send("4{\"message\":\"denied\"}")
+            session.send("0")
+            h.settle()
+            assertEquals(emptyList<Throwable>(), errors)
+            assertTrue(socket.connected)
+            assertTrue(socket.active)
+            assertEquals(id, socket.id)
+            h.close()
+        }
+
     // A string CONNECT_ERROR payload is the message. As in socket.io-parser, `null` is not a
     // valid CONNECT_ERROR payload (isObject(null) is false): it is a parse error, not a refusal.
     @Test

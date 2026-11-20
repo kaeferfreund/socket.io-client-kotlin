@@ -422,18 +422,14 @@ public class Socket internal constructor(
         if (packet.nsp != namespace) return
         when (packet.type) {
             SocketIOPacketType.CONNECT -> {
+                // JavaScript accepts any CONNECT. Here only the answer to the CONNECT this socket
+                // sent on this connection counts: a peer must not connect the namespace (and
+                // release the send buffer) while the auth provider is still running or after it
+                // failed, nor connect it twice. An empty (v2.x) CONNECT is such an answer too.
+                if (!connectSent) return ignoreUnrequested("CONNECT")
                 val data = packet.data as? SocketIOValue.Object
                 val sid = data?.get("sid")?.string
                 if (sid != null && sid.isNotEmpty()) {
-                    // JavaScript accepts any CONNECT. Here only the answer to the CONNECT this socket
-                    // sent on this connection counts: a peer must not connect the namespace (and
-                    // release the send buffer) while the auth provider is still running or after it
-                    // failed, nor connect it twice.
-                    if (!connectSent) {
-                        val logger = manager.options.logger
-                        if (logger.isLoggable(LogLevel.DEBUG)) logger.log(LogLevel.DEBUG, "socket", "ignored an unrequested CONNECT for $namespace")
-                        return
-                    }
                     onconnect(sid, data["pid"]?.string)
                 } else {
                     emitConnectError(
@@ -452,6 +448,10 @@ public class Socket internal constructor(
             SocketIOPacketType.DISCONNECT -> ondisconnect()
 
             SocketIOPacketType.CONNECT_ERROR -> {
+                // A server sends CONNECT_ERROR only to refuse a CONNECT. JavaScript accepts it at any
+                // time; on a connected socket it destroys the socket but leaves it marked as connected,
+                // so connect() does nothing any more and acknowledgements never fail.
+                if (!connectSent) return ignoreUnrequested("CONNECT_ERROR")
                 destroy()
                 val data = packet.data
                 val error =
@@ -465,6 +465,11 @@ public class Socket internal constructor(
                 emitConnectError(error)
             }
         }
+    }
+
+    private fun ignoreUnrequested(type: String) {
+        val logger = manager.options.logger
+        if (logger.isLoggable(LogLevel.DEBUG)) logger.log(LogLevel.DEBUG, "socket", "ignored an unrequested $type for $namespace")
     }
 
     private fun onevent(packet: SocketIOPacket) {

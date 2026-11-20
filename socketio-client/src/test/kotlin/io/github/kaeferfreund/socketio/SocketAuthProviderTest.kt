@@ -229,4 +229,41 @@ class SocketAuthProviderTest {
             assertTrue("secret-token" !in error.cause?.message.orEmpty(), error.cause?.message)
             h.close()
         }
+
+    @Test
+    fun aConnectErrorBeforeTheProviderSentConnectIsIgnored() =
+        runClientTest {
+            val h =
+                clientHarness {
+                    engine.onConnection = { session ->
+                        // Unsolicited: the client has not sent its CONNECT yet.
+                        session.send("4{\"message\":\"denied\"}")
+                        session.send("0")
+                        session.onMessage = { data ->
+                            if ((data as EngineIOData.Text).value.startsWith("0")) session.send("0{\"sid\":\"answer\"}")
+                        }
+                    }
+                }
+            val release = CompletableDeferred<Unit>()
+            val errors = ArrayList<Throwable>()
+            val socket =
+                h.manager().socket(
+                    options =
+                    SocketOptions {
+                        authProvider =
+                            AuthProvider {
+                                release.await()
+                                mapOf("token" to "t")
+                            }
+                    },
+                ) { onConnectError { errors += it } }
+            h.settle()
+            assertEquals(emptyList<Throwable>(), errors)
+            assertTrue(socket.active)
+            release.complete(Unit)
+            h.settle()
+            assertTrue(socket.connected)
+            assertEquals("answer", socket.id)
+            h.close()
+        }
 }

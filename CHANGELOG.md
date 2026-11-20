@@ -30,6 +30,9 @@ API are unchanged; every difference from the JavaScript client is listed in the
   receive-buffer byte limit; concurrent `SocketIO.io` calls no longer share one
   namespace socket, and reusing a cached manager with other options logs a
   warning.
+- Socket.IO: a CONNECT_ERROR or empty CONNECT that answers no CONNECT of the
+  socket is ignored; an unrequested CONNECT_ERROR left a connected socket
+  destroyed but marked as connected, so `connect()` did nothing any more.
 - Parser: a repeated attachment is copied once per conversion instead of once
   per reference, and rejected binary input is not copied before the byte-limit
   check. A payload too deep to decode reaches `onSerializable`'s `onError`.
