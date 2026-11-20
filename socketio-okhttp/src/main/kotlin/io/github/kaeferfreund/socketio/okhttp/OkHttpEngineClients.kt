@@ -224,7 +224,11 @@ public class OkHttpEngineClients(
                         response: Response?,
                     ) {
                         response?.close()
-                        listener.onFailure(t, response?.code)
+                        if (NoWebSocketExtensions.refused(response)) {
+                            listener.onFailure(NoWebSocketExtensions.failure(), null)
+                        } else {
+                            listener.onFailure(t, response?.code)
+                        }
                     }
                 },
             )
@@ -357,17 +361,31 @@ public class OkHttpEngineClients(
     private object NoWebSocketExtensions : Interceptor {
         override fun intercept(chain: Interceptor.Chain): Response {
             val response = chain.proceed(chain.request().newBuilder().removeHeader(EXTENSIONS).build())
-            if (response.code == HTTP_SWITCHING_PROTOCOLS && response.headers(EXTENSIONS).any { it.isNotBlank() }) {
-                // Drop the upgraded connection: it must neither be used nor return to the pool.
-                chain.call().cancel()
-                response.close()
-                throw ProtocolException("the server accepted a WebSocket extension that was not offered")
-            }
+            if (response.code != HTTP_SWITCHING_PROTOCOLS || response.headers(EXTENSIONS).none { it.isNotBlank() }) return response
+            // Turn the upgrade into a failed one: OkHttp then fails the WebSocket itself and
+            // releases the upgraded connection, which is neither used nor returned to the pool.
+            // Throwing here instead would leave the connection allocated.
             return response
+                .newBuilder()
+                .request(response.request.newBuilder().tag(Refused::class.java, Refused).build())
+                .code(HTTP_UPGRADE_REQUIRED)
+                .message(MESSAGE)
+                .build()
         }
 
+        /** Whether [response] is a handshake this interceptor refused. */
+        fun refused(response: Response?): Boolean = response?.request?.tag(Refused::class.java) != null
+
+        /** The failure reported for a refused handshake, without OkHttp's synthetic status. */
+        fun failure(): ProtocolException = ProtocolException(MESSAGE)
+
+        /** Tags the request of a refused handshake; a server cannot forge it. */
+        private object Refused
+
+        private const val MESSAGE = "the server accepted a WebSocket extension that was not offered"
         private const val EXTENSIONS = "Sec-WebSocket-Extensions"
         private const val HTTP_SWITCHING_PROTOCOLS = 101
+        private const val HTTP_UPGRADE_REQUIRED = 426
     }
 
     /** Runs [report] on OkHttp's dispatcher threads, never inside the caller's stack. */

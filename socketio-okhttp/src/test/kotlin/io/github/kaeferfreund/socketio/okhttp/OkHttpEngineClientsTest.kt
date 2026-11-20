@@ -9,6 +9,8 @@ import io.github.kaeferfreund.socketio.engineio.EngineWebSocketRequest
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
 import mockwebserver3.SocketEffect
+import okhttp3.ConnectionPool
+import okhttp3.OkHttpClient
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
@@ -197,9 +199,12 @@ class OkHttpEngineClientsTest {
         assertEquals(listOf("a, b"), server.takeRequest().headers.values("Sec-WebSocket-Protocol"))
     }
 
-    private fun webSocketFailure(request: EngineWebSocketRequest): Pair<Throwable, Int?> {
+    private fun webSocketFailure(
+        request: EngineWebSocketRequest,
+        clients: OkHttpEngineClients = OkHttpEngineClients(),
+    ): Pair<Throwable, Int?> {
         val failure = CompletableFuture<Pair<Throwable, Int?>>()
-        OkHttpEngineClients().connect(
+        clients.connect(
             request,
             object : EngineWebSocketListener {
                 override fun onOpen(responseHeaders: List<Pair<String, String>>) = Unit
@@ -604,6 +609,32 @@ class OkHttpEngineClientsTest {
         )
         assertEquals("failure:ProtocolException", events.poll(5, TimeUnit.SECONDS))
         assertNull(server.takeRequest().headers["Sec-WebSocket-Extensions"])
+    }
+
+    // The refused upgrade must release its connection: a 101 response the client abandons
+    // otherwise stays allocated in the pool, one leaked socket per refused handshake.
+    @Test
+    fun aRefusedExtensionReleasesTheConnection() {
+        val clients = OkHttpEngineClients(OkHttpClient.Builder().connectionPool(ConnectionPool()).build())
+        // OkHttp ends a refused upgrade after reporting it; the dispatcher goes idle once it has.
+        val idle = LinkedBlockingQueue<Unit>()
+        clients.client.dispatcher.idleCallback = Runnable { idle.put(Unit) }
+        val url = server.url("/socket.io/").toString().replace("http", "ws")
+        repeat(5) {
+            server.enqueue(
+                MockResponse.Builder()
+                    .addHeader("Sec-WebSocket-Extensions", "permessage-deflate")
+                    .webSocketUpgrade(object : WebSocketListener() {})
+                    .build(),
+            )
+            val (error, status) = webSocketFailure(EngineWebSocketRequest(url, emptyList(), emptyList(), null), clients)
+            assertTrue(error is java.net.ProtocolException, error.toString())
+            assertTrue("the server accepted a WebSocket extension that was not offered" in error.message!!, error.message)
+            assertNull(status)
+            assertEquals(Unit, idle.poll(5, TimeUnit.SECONDS))
+        }
+        clients.client.connectionPool.evictAll()
+        assertEquals(0, clients.client.connectionPool.connectionCount())
     }
 
     @Test
