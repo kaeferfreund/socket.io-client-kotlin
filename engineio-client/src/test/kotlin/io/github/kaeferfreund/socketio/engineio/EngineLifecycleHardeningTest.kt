@@ -465,7 +465,11 @@ class EngineLifecycleHardeningTest {
         }
         assertTrue(http.startsWith("EngineHttpRequest(GET https://"), http)
         val withUserInfo = EngineWebSocketRequest("wss://u:pw@h/p?a=1&b#frag", emptyList(), emptyList(), null)
-        assertEquals("EngineWebSocketRequest(wss://***@h/p?a=***&b)", withUserInfo.toString())
+        assertEquals("EngineWebSocketRequest(wss://***@h/p?a=***&***)", withUserInfo.toString())
+        assertEquals("EngineHttpRequest(GET https://h/p)", EngineHttpRequest("GET", "https://h/p#access_token=xyz", emptyList(), null, null).toString())
+        assertEquals("EngineHttpRequest(GET https://h/p?***)", EngineHttpRequest("GET", "https://h/p?access_token", emptyList(), null, null).toString())
+        assertEquals("EngineHttpRequest(GET https://h/?***&a=***)", EngineHttpRequest("GET", "https://h/?eyJhbGc.x.y&a=1", emptyList(), null, null).toString())
+        assertEquals("EngineHttpRequest(GET https://h/p?&a=***)", EngineHttpRequest("GET", "https://h/p?&a=1#t", emptyList(), null, null).toString())
         assertEquals("EngineHttpRequest(GET http://h/p/q@r)", EngineHttpRequest("GET", "http://h/p/q@r", emptyList(), null, null).toString())
         val cookie = EngineCookie("session", "s3cr3t").toString()
         assertFalse(cookie.contains("s3cr3t"), cookie)

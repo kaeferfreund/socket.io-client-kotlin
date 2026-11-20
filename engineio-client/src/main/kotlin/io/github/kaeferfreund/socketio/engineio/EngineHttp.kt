@@ -32,7 +32,7 @@ public class EngineHttpRequest(
     /** Maximum response body bytes to accept; larger bodies fail the request. */
     public val maxResponseBytes: Long = Long.MAX_VALUE,
 ) {
-    /** Method and URL, with query values and user info redacted: they may carry the session id or tokens. */
+    /** Method and URL, with query values and user info redacted and without fragment: they may carry the session id or tokens. */
     override fun toString(): String = "EngineHttpRequest($method ${redactUrl(url)})"
 }
 
@@ -81,26 +81,37 @@ public class EngineWebSocketRequest(
      */
     public val compressionThreshold: Int?,
 ) {
-    /** The URL, with query values and user info redacted: they may carry the session id or tokens. */
+    /** The URL, with query values and user info redacted and without fragment: they may carry the session id or tokens. */
     override fun toString(): String = "EngineWebSocketRequest(${redactUrl(url)})"
 }
 
 private const val REDACTED = "***"
 
-/** [url] for logs: query parameter names stay, their values and any user info are replaced. */
+/**
+ * [url] for logs: user info and query values are replaced and the fragment is dropped, since
+ * any of them may carry the session id or a token. The names of `name=value` parameters stay; a
+ * parameter without `=` is replaced whole, as it may be a bare token. The engine decodes such a
+ * parameter of its URI into a name with the value `undefined`, as JavaScript does, and sends it
+ * as `name=undefined`, so in its request URLs that name stays visible.
+ */
 internal fun redactUrl(url: String): String {
     val authorityStart = url.indexOf("://").let { if (it < 0) 0 else it + 3 }
     val authorityEnd = url.indexOfAny(charArrayOf('/', '?', '#'), authorityStart).let { if (it < 0) url.length else it }
     val at = url.lastIndexOf('@', authorityEnd - 1)
     val withoutUserInfo = if (at >= authorityStart) url.substring(0, authorityStart) + REDACTED + url.substring(at) else url
-    val queryStart = withoutUserInfo.indexOf('?')
-    if (queryStart < 0) return withoutUserInfo
+    val withoutFragment = withoutUserInfo.substringBefore('#')
+    val queryStart = withoutFragment.indexOf('?')
+    if (queryStart < 0) return withoutFragment
     val query =
-        withoutUserInfo.substring(queryStart + 1).substringBefore('#').split('&').joinToString("&") { parameter ->
+        withoutFragment.substring(queryStart + 1).split('&').joinToString("&") { parameter ->
             val eq = parameter.indexOf('=')
-            if (eq < 0) parameter else parameter.substring(0, eq + 1) + REDACTED
+            when {
+                parameter.isEmpty() -> parameter
+                eq < 0 -> REDACTED
+                else -> parameter.substring(0, eq + 1) + REDACTED
+            }
         }
-    return withoutUserInfo.substring(0, queryStart + 1) + query
+    return withoutFragment.substring(0, queryStart + 1) + query
 }
 
 /** An open (or opening) WebSocket. Every method may be called from any thread. */
