@@ -226,9 +226,25 @@ Recovery is not guaranteed: the server discards the session after
 `maxDisconnectionDuration`, after a restart, and after a deliberate disconnect by
 either side. Always handle a fresh session. The client does not deduplicate replayed
 events, and [retries](Acknowledgements.md#retries) may resend client events; make
-handlers idempotent where duplicates matter. To switch to another user, call
-`socket.clearRecoveryState()` before the next connect (the new session starts fresh),
-or close the manager and create a new one.
+handlers idempotent where duplicates matter.
+
+To switch to another user on the same socket, disconnect, call
+`socket.clearRecoveryState()`, update the credentials and connect again:
+
+```kotlin
+socket.disconnect()
+socket.clearRecoveryState()
+token = newUserToken // read by the auth provider
+socket.connect()
+```
+
+`clearRecoveryState()` makes the next CONNECT start a fresh session and drops what
+the previous user left waiting: emits in the send buffer and the retry queue, and
+events received before a CONNECT. Their acknowledgements fail with
+`SocketDisconnectedException`, so nothing of the previous user is sent under the
+new identity. Emits made after the call are kept. Listeners stay registered; remove
+the previous user's listeners yourself. Closing the manager and creating a new one
+is the other clean way to switch users.
 
 ## Pausing and network changes
 

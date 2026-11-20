@@ -192,14 +192,50 @@ public class Socket internal constructor(
     /**
      * Forgets the connection-state-recovery session (`pid` and offset), so the
      * next CONNECT starts a fresh session — for example after the signed-in
-     * user changed. Has no effect on the current connection.
+     * user changed.
+     *
+     * Everything the previous session left waiting is dropped too, so none of
+     * it reaches the next one: emits in the send buffer and the retry queue
+     * (including a retry waiting for its acknowledgement) and events received
+     * before a CONNECT. Their acknowledgements fail with
+     * [SocketDisconnectedException], as on [SocketManager.close]. Emits made
+     * after this call are kept. The current connection stays up, and
+     * acknowledgements of other emits it already sent are still answered.
      */
     public fun clearRecoveryState(): Socket {
         executor.execute {
             pid = null
             lastOffset = null
+            dropPending()
         }
         return this
+    }
+
+    /** Drops what is waiting to be sent or delivered; see [clearRecoveryState]. */
+    private fun dropPending() {
+        val error = SocketDisconnectedException()
+        receiveBuffer.clear()
+        receiveBufferBytes = 0
+        val queued = ArrayList(queue)
+        for (packet in queued) packet.callback = { _, _ -> }
+        queue.clear()
+        queueBytes = 0
+        val inFlight = ArrayList(inFlightAckIds.values)
+        inFlightAckIds.clear()
+        val buffered = ArrayList(sendBuffer)
+        sendBuffer.clear()
+        sendBufferBytes = 0
+        val dropped = ArrayList<AckEntry>()
+        for (id in buffered.mapNotNull { it.packet.id } + inFlight) {
+            val entry = acks.remove(id) ?: continue
+            entry.timer?.cancel()
+            dropped.add(entry)
+        }
+        updatePending()
+        for (item in buffered) intercept { it.onDropped(item.event, error) }
+        // A retry's own entry only forwards to its (now silenced) queue callback; the queued ack is failed below.
+        for (entry in dropped) if (entry.withError) entry.callback(error, emptyList())
+        for (packet in queued) packet.ack?.invoke(error, emptyList())
     }
 
     internal fun connectOnExecutor() {
