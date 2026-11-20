@@ -126,6 +126,50 @@ class OkHttpEngineClientsTest {
         assertTrue(failure.get(5, TimeUnit.SECONDS) is java.io.IOException)
     }
 
+    // Applications log connect errors; a rejected header value or the URL query (tokens, sid)
+    // must not end up in the message or in any cause of it.
+    @Test
+    fun anInvalidRequestReportsNeitherHeaderValuesNorTheQuery() {
+        val clients = OkHttpEngineClients()
+        val secret = "s3cret-tökén"
+        val failures = mutableListOf<Throwable>()
+        val badHeader = EngineHttpRequest("GET", server.url("/socket.io/?EIO=4&token=$secret").toString(), listOf("X-Token" to secret), null, null)
+        failures += execute(clients, badHeader).exceptionOrNull()!!
+        val badUrl = EngineHttpRequest("GET", "http://exa mple.com:99999/socket.io/?token=$secret#$secret", emptyList(), null, null)
+        failures += execute(clients, badUrl).exceptionOrNull()!!
+        val wsFailure = CompletableFuture<Throwable>()
+        clients.connect(
+            EngineWebSocketRequest(server.url("/socket.io/?token=$secret").toString().replace("http", "ws"), listOf("X-Token" to secret), emptyList(), null),
+            object : EngineWebSocketListener {
+                override fun onOpen(responseHeaders: List<Pair<String, String>>) = Unit
+
+                override fun onMessage(text: String) = Unit
+
+                override fun onMessage(bytes: ByteArray) = Unit
+
+                override fun onClosed(
+                    code: Int,
+                    reason: String,
+                ) = Unit
+
+                override fun onFailure(
+                    error: Throwable,
+                    httpStatus: Int?,
+                ) {
+                    wsFailure.complete(error)
+                }
+            },
+        )
+        failures += wsFailure.get(5, TimeUnit.SECONDS)
+        for (failure in failures) {
+            assertTrue(failure is java.io.IOException)
+            val messages = generateSequence(failure) { it.cause }.map { it.toString() }.toList()
+            assertTrue(messages.none { "s3cret" in it }, "secret in $messages")
+        }
+        assertTrue("X-Token" in failures[0].message!!, failures[0].message)
+        assertEquals(0, server.requestCount)
+    }
+
     @Test
     fun reportsErrorStatusesAsResponses() {
         server.enqueue(MockResponse.Builder().code(400).body("{\"code\":1,\"message\":\"Session ID unknown\"}").build())

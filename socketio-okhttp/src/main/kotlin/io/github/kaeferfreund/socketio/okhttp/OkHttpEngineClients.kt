@@ -83,7 +83,7 @@ public class OkHttpEngineClients(
             try {
                 val url = request.url.toHttpUrl()
                 val builder = Request.Builder().url(url).tag(Origin::class.java, Origin.of(url))
-                for ((name, value) in request.headers) builder.addHeader(name, value)
+                for ((name, value) in request.headers) addHeader(builder, name, value)
                 if (request.method == "POST") {
                     builder.post((request.body ?: "").toRequestBody(TEXT_PLAIN))
                 } else {
@@ -93,7 +93,7 @@ public class OkHttpEngineClients(
             } catch (e: IllegalArgumentException) {
                 // A URL or header value OkHttp rejects (for example a non-ASCII character) fails
                 // this request like a network error, on another thread as the contract requires.
-                failLater { callback.onFailure(IOException("invalid request: ${e.message}", e)) }
+                failLater { callback.onFailure(invalidRequest(e, request.url)) }
                 return Cancellable.NONE
             }
         val call = client.newCall(okRequest)
@@ -146,10 +146,10 @@ public class OkHttpEngineClients(
         val builder = Request.Builder()
         try {
             builder.url(request.url)
-            for ((name, value) in request.headers) builder.addHeader(name, value)
+            for ((name, value) in request.headers) addHeader(builder, name, value)
             if (request.protocols.isNotEmpty()) builder.header("Sec-WebSocket-Protocol", request.protocols.joinToString(", "))
         } catch (e: IllegalArgumentException) {
-            failLater { listener.onFailure(IOException("invalid request: ${e.message}", e), null) }
+            failLater { listener.onFailure(invalidRequest(e, request.url), null) }
             return ClosedConnection
         }
         val wsBuilder = client.newBuilder().followRedirects(false)
@@ -210,6 +210,42 @@ public class OkHttpEngineClients(
                 },
             )
         return OkHttpWebSocketConnection(socket)
+    }
+
+    /** Adds a header; OkHttp's error for a rejected value names the header but not the value. */
+    private fun addHeader(
+        builder: Request.Builder,
+        name: String,
+        value: String,
+    ) {
+        try {
+            builder.addHeader(name, value)
+        } catch (e: IllegalArgumentException) {
+            throw redacted(e, value)
+        }
+    }
+
+    /**
+     * The failure for a request OkHttp cannot build. Applications log connection errors, so
+     * neither the message nor its cause carries the URL's query or fragment (`sid`, tokens).
+     */
+    private fun invalidRequest(
+        e: IllegalArgumentException,
+        url: String,
+    ): IOException {
+        val cause = redacted(e, url.substringAfter('?', "").substringBefore('#'), url.substringAfter('#', ""))
+        return IOException("invalid request: ${cause.message}", cause)
+    }
+
+    /** [e] itself, or a copy with the same stack trace whose message has [secrets] replaced. */
+    private fun redacted(
+        e: IllegalArgumentException,
+        vararg secrets: String,
+    ): IllegalArgumentException {
+        val message = e.message ?: return e
+        val clean = secrets.filter { it.isNotEmpty() }.fold(message) { text, secret -> text.replace(secret, REDACTED) }
+        if (clean == message) return e
+        return IllegalArgumentException(clean).also { it.stackTrace = e.stackTrace }
     }
 
     /** Scheme, host and port of the URL a request was made for. */
@@ -325,6 +361,8 @@ public class OkHttpEngineClients(
 
     public companion object {
         private val TEXT_PLAIN = "text/plain;charset=UTF-8".toMediaType()
+
+        private const val REDACTED = "<redacted>"
 
         /** `RealWebSocket.MAX_QUEUE_SIZE`: OkHttp's limit for queued outgoing WebSocket bytes. */
         private const val OKHTTP_MAX_QUEUE_BYTES = 16L * 1024 * 1024
