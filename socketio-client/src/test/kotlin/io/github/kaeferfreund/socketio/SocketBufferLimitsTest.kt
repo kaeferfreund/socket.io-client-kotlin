@@ -147,6 +147,31 @@ class SocketBufferLimitsTest {
         }
 
     @Test
+    fun emptyEventsStillCountAgainstTheReceiveBufferByteLimit() =
+        runClientTest {
+            val h =
+                clientHarness {
+                    engine.onConnection = { session ->
+                        session.onMessage = { data ->
+                            if ((data as EngineIOData.Text).value.startsWith("0")) repeat(100) { session.send("2[\"\",\"\"]") }
+                        }
+                    }
+                }
+            val errors = ArrayList<Throwable>()
+            val manager =
+                h.manager(setup = { on<ManagerEvent.Error> { errors += it.error } }) {
+                    bufferLimits = SocketBufferLimits(maxReceiveBufferBytes = 64)
+                    reconnection = false
+                }
+            manager.socket()
+            h.settle()
+            // Events already decoded from the same payload may overflow again after the close.
+            val error = errors.first() as SocketBufferLimitException
+            assertEquals(SocketBufferLimitException.Buffer.RECEIVE_BUFFER, error.buffer)
+            assertTrue(error.measuringBytes)
+        }
+
+    @Test
     fun eventsBufferedOnAClosedConnectionAreNotDeliveredOnTheNextOne() =
         runClientTest {
             var connections = 0

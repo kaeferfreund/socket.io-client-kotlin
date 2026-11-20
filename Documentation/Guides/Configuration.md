@@ -356,7 +356,8 @@ val options = SocketManagerOptions {
 }
 ```
 
-Byte counts of the buffers are estimates of retained memory, not wire sizes.
+Byte counts of the buffers are estimates of retained memory, not wire sizes. In the
+receive buffer, every event and every argument counts a few bytes even when it is empty.
 
 ## Hardening for untrusted servers
 

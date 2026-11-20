@@ -440,7 +440,8 @@ public class Socket internal constructor(
             emitEvent(event)
         } else {
             val limits = manager.options.bufferLimits
-            val bytes = estimateBytes(items)
+            // Every retained event and argument costs memory, even when empty.
+            val bytes = RETAINED_EVENT_BYTES + estimateBytes(items, slotBytes = RETAINED_SLOT_BYTES)
             if (receiveBuffer.size + 1 > limits.maxReceiveBufferPackets || receiveBufferBytes + bytes > limits.maxReceiveBufferBytes) {
                 val error =
                     if (receiveBuffer.size + 1 > limits.maxReceiveBufferPackets) {
@@ -1025,15 +1026,25 @@ public class Socket internal constructor(
     override fun toString(): String = "Socket(namespace=$namespace, state=${stateFlow.value})"
 
     internal companion object {
-        fun estimateBytes(values: List<SocketIOValue>): Long {
+        /** Fixed cost of one event in the receive buffer. */
+        private const val RETAINED_EVENT_BYTES = 16L
+
+        /** Fixed cost of one text or binary argument in the receive buffer; other values cost 8 bytes already. */
+        private const val RETAINED_SLOT_BYTES = 8L
+
+        /** Estimated retained bytes of [values]; [slotBytes] is added for every text and binary value. */
+        fun estimateBytes(
+            values: List<SocketIOValue>,
+            slotBytes: Long = 0,
+        ): Long {
             var total = 0L
             val stack = ArrayDeque(values)
             while (stack.isNotEmpty()) {
                 total +=
                     when (val value = stack.removeLast()) {
-                        is SocketIOValue.Text -> value.value.length.toLong() * 2
+                        is SocketIOValue.Text -> slotBytes + value.value.length.toLong() * 2
 
-                        is SocketIOValue.Binary -> value.size.toLong()
+                        is SocketIOValue.Binary -> slotBytes + value.size.toLong()
 
                         is SocketIOValue.Array -> {
                             stack.addAll(value.items)
