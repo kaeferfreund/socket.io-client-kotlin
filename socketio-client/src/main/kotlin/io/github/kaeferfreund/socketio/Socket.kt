@@ -66,6 +66,9 @@ public class Socket internal constructor(
     private var connectGeneration = 0
     private var providerJob: Job? = null
 
+    /** Whether this socket sent a CONNECT on the current connection that is not answered yet. */
+    private var connectSent = false
+
     /** `true` while subscribed to the manager, i.e. connected or trying to (`socket.active`). Executor only. */
     internal val isActive: Boolean get() = subs != null
 
@@ -232,6 +235,7 @@ public class Socket internal constructor(
         subs?.forEach(Cancellable::cancel)
         subs = null
         activeView = false
+        connectSent = false
         connectGeneration++
         providerJob?.cancel()
         providerJob = null
@@ -293,6 +297,7 @@ public class Socket internal constructor(
                 data
             }
         packet(SocketIOPacket(SocketIOPacketType.CONNECT, namespace, payload), compress = true)
+        connectSent = true
     }
 
     private fun onerror(error: Throwable) {
@@ -309,6 +314,7 @@ public class Socket internal constructor(
     ) {
         val wasConnected = connectedState
         connectedState = false
+        connectSent = false
         idState = null
         stateFlow.value = ConnectionState.Disconnected(reason, details)
         // JavaScript also emits "disconnect" for a socket that never connected (its
@@ -365,6 +371,15 @@ public class Socket internal constructor(
                 val data = packet.data as? SocketIOValue.Object
                 val sid = data?.get("sid")?.string
                 if (sid != null && sid.isNotEmpty()) {
+                    // JavaScript accepts any CONNECT. Here only the answer to the CONNECT this socket
+                    // sent on this connection counts: a peer must not connect the namespace (and
+                    // release the send buffer) while the auth provider is still running or after it
+                    // failed, nor connect it twice.
+                    if (!connectSent) {
+                        val logger = manager.options.logger
+                        if (logger.isLoggable(LogLevel.DEBUG)) logger.log(LogLevel.DEBUG, "socket", "ignored an unrequested CONNECT for $namespace")
+                        return
+                    }
                     onconnect(sid, data["pid"]?.string)
                 } else {
                     emitConnectError(
@@ -478,6 +493,7 @@ public class Socket internal constructor(
         id: String,
         newPid: String?,
     ) {
+        connectSent = false
         idState = id
         recoveredState = newPid != null && pid == newPid
         pid = newPid

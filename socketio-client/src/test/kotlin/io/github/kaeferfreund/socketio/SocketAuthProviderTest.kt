@@ -1,5 +1,6 @@
 package io.github.kaeferfreund.socketio
 
+import io.github.kaeferfreund.socketio.engineio.parser.EngineIOData
 import io.github.kaeferfreund.socketio.parser.SocketIOPacketType
 import io.github.kaeferfreund.socketio.testing.FakeSocketIOServer
 import kotlinx.coroutines.CompletableDeferred
@@ -170,6 +171,49 @@ class SocketAuthProviderTest {
             h.manager().socket(options = SocketOptions { auth = listOf(1) }) { onConnectError { errors += it } }
             h.settle()
             assertTrue(errors.single() is AuthProviderException)
+            h.close()
+        }
+
+    @Test
+    fun aConnectAnswerBeforeTheProviderSentConnectIsIgnored() =
+        runClientTest {
+            val sent = ArrayList<String>()
+            val h =
+                clientHarness {
+                    engine.onConnection = { session ->
+                        // Unsolicited: the client has not sent its CONNECT yet.
+                        session.send("0{\"sid\":\"unsolicited\"}")
+                        session.onMessage = { data ->
+                            val text = (data as EngineIOData.Text).value
+                            sent += text
+                            if (text.startsWith("0")) session.send("0{\"sid\":\"answer\"}")
+                        }
+                    }
+                }
+            val release = CompletableDeferred<Unit>()
+            var connects = 0
+            val socket =
+                h.manager().socket(
+                    options =
+                    SocketOptions {
+                        authProvider =
+                            AuthProvider {
+                                release.await()
+                                mapOf("token" to "t")
+                            }
+                    },
+                ) { onConnect { connects++ } }
+            socket.emit("buffered")
+            h.settle()
+            assertTrue(!socket.connected)
+            assertEquals(0, connects)
+            assertTrue(sent.none { it.startsWith("2") }, "$sent")
+            release.complete(Unit)
+            h.settle()
+            assertTrue(socket.connected)
+            assertEquals("answer", socket.id)
+            assertEquals(1, connects)
+            assertEquals(1, sent.count { it.startsWith("2[\"buffered\"") })
             h.close()
         }
 }
