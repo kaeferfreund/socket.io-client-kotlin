@@ -186,6 +186,14 @@ public class EngineSocket(
     }
 
     private fun onOpen() {
+        // A handshake that arrives after close() only lets the buffered packets go out before
+        // the close. JavaScript reopens the engine here: it reports "open", starts upgrade
+        // probes and extends the heartbeat deadline again on every ping, so a server that
+        // never completes the pending write could keep a closed connection alive.
+        if (readyState == EngineState.CLOSING) {
+            flush()
+            return
+        }
         readyState = EngineState.OPEN
         priorWebsocketSuccess.set(transport?.name == WebSocketTransport.NAME)
         events.emit(EngineEvent.Open)

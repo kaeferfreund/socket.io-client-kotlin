@@ -102,6 +102,11 @@ bound. A well-behaved server never notices these differences.
   one probe connection per entry, duplicates included.
 - **Repeated handshakes.** An `open` packet after the handshake is ignored.
   JavaScript handles it as a new handshake and probes again.
+- **Handshake after `close()`.** When the handshake arrives after `close()`
+  was called on a connecting engine, the packets buffered before `close()` are
+  still sent and the engine then closes, but it does not become open again: no
+  `open` event, no upgrade probe, and pings do not extend its heartbeat
+  deadline. JavaScript reopens the engine.
 - **Heartbeat replies.** While a write is pending, one buffered pong answers
   every ping that arrives. JavaScript buffers one pong per ping, so a server
   that stalls the write could grow the buffer without bound.

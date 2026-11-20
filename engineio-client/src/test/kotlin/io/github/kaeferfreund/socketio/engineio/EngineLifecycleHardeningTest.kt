@@ -112,6 +112,48 @@ class EngineLifecycleHardeningTest {
             s.executor.shutdown()
         }
 
+    @Test
+    fun aHandshakeAfterCloseDoesNotReopenTheEngine() =
+        runTest {
+            val s = setup()
+            val opened = ArrayList<EngineEvent>()
+            s.engine.events.on(EngineEvent.Open::class.java) { opened += it }
+            s.run { s.engine.send("early") }
+            s.run { s.engine.close() }
+            assertEquals(EngineState.CLOSING, s.engine.readyState)
+            s.http.answerPoll(handshake())
+            s.settle()
+            assertEquals(EngineState.CLOSING, s.engine.readyState)
+            assertTrue(opened.isEmpty(), "a closed engine reported open")
+            assertTrue(s.ws.connections.isEmpty(), "a closed engine probed an upgrade")
+            // The packets buffered before close() are still sent, then the engine closes.
+            val post = s.http.pending("POST").single()
+            assertEquals("4early", post.request.body)
+            post.respond(EngineHttpResponse(200, "ok"))
+            s.settle()
+            assertEquals(EngineState.CLOSED, s.engine.readyState)
+            assertEquals(listOf("forced close"), s.closeReasons)
+            s.executor.shutdown()
+        }
+
+    @Test
+    fun aHandshakeAfterCloseCannotKeepAStalledEngineAlive() =
+        runTest {
+            val s = setup()
+            s.run { s.engine.send("early") }
+            s.run { s.engine.close() }
+            s.http.answerPoll(handshake(pingInterval = 1000, pingTimeout = 500))
+            s.settle()
+            // The server pings every 100 ms but never answers the POST.
+            repeat(40) {
+                s.http.pending("GET").singleOrNull()?.respond(EngineHttpResponse(200, "2"))
+                advanceTimeBy(100.milliseconds)
+            }
+            assertEquals(EngineState.CLOSED, s.engine.readyState)
+            assertEquals(listOf("ping timeout"), s.closeReasons)
+            s.executor.shutdown()
+        }
+
     // ---- Finding: polling payload expansion ----------------------------------------------------
 
     @Test
