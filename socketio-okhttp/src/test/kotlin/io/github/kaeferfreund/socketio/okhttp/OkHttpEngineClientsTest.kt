@@ -321,7 +321,9 @@ class OkHttpEngineClientsTest {
                     ).build()
             server.enqueue(MockResponse.Builder().code(302).addHeader("Location", other.url("/collect").toString()).build())
             assertTrue(execute(OkHttpEngineClients(base), get()).exceptionOrNull() is java.net.ProtocolException)
-            assertEquals(listOf(server.port), connected.toList())
+            // Distinct ports: where "localhost" resolves to both ::1 and 127.0.0.1, OkHttp
+            // tries each address of the first origin, so one origin can count twice.
+            assertEquals(setOf(server.port), connected.toSet())
         } finally {
             other.close()
         }
