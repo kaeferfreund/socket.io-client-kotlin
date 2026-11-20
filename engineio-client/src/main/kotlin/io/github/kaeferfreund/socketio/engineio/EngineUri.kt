@@ -73,18 +73,45 @@ public object EngineUri {
      */
     public fun parse(uri: String): Parsed {
         require(uri.length <= 8000) { "URI too long" }
-        var str = uri
-        val b = str.indexOf('[')
-        val e = str.indexOf(']')
-        val bracketed = b != -1 && e != -1
-        if (bracketed) {
-            str = str.substring(0, b) + str.substring(b, e).replace(':', ';') + str.substring(e)
+        // Deliberate deviation from JavaScript: `parseuri` takes the first `[` and `]` anywhere in
+        // the string as an IPv6 literal, so `https://chat.example.com/?ids[]=1` yields the host
+        // `hat.example.co`. Only brackets around the host inside the authority count here.
+        val literal = ipv6Literal(uri)
+        if (literal != null) {
+            val (b, e) = literal
+            val str = uri.substring(0, b) + uri.substring(b, e).replace(':', ';') + uri.substring(e)
+            match(uri, str, bracketed = true)?.let { return it }
         }
+        return checkNotNull(match(uri, uri, bracketed = false))
+    }
+
+    /** Indices of `[` and `]` when both lie in the authority, before the first `/`, `?` or `#` after the scheme. */
+    private fun ipv6Literal(uri: String): Pair<Int, Int>? {
+        val start = SCHEME_PREFIX.find(uri)?.range?.last?.plus(1) ?: 0
+        val end = uri.indexOfAny(AUTHORITY_END, start).let { if (it == -1) uri.length else it }
+        val b = uri.indexOf('[', start)
+        if (b == -1 || b >= end) return null
+        val e = uri.indexOf(']', b)
+        return if (e == -1 || e >= end) null else b to e
+    }
+
+    /**
+     * Applies [PARSE_URI] to [str], which is [uri] with the colons of a
+     * bracketed host replaced when [bracketed]. Returns `null` when
+     * [bracketed] but the host group is not the bracketed literal.
+     */
+    private fun match(
+        uri: String,
+        str: String,
+        bracketed: Boolean,
+    ): Parsed? {
         val m = PARSE_URI.find(str) ?: error("unparseable URI")
         fun group(i: Int) = m.groups[i]?.value.orEmpty()
         var host = group(6)
         var authority = group(2)
         if (bracketed) {
+            // Brackets in the user info, for example, are not an IPv6 host: parse without the substitution.
+            if (host.length < 2 || !host.startsWith('[') || !host.endsWith(']')) return null
             host = host.substring(1, host.length - 1).replace(';', ':')
             authority = authority.replace("[", "").replace("]", "").replace(';', ':')
         }
@@ -106,6 +133,10 @@ public object EngineUri {
             ipv6 = bracketed,
         )
     }
+
+    private val SCHEME_PREFIX = Regex("^(?:http|https|ws|wss)://")
+
+    private val AUTHORITY_END = charArrayOf('/', '?', '#')
 
     /** JavaScript `encodeURIComponent`. */
     public fun encodeURIComponent(value: String): String {

@@ -103,6 +103,15 @@ class SocketIOUrlTest {
         assertEquals("443", SocketIO.url("example.com").port)
     }
 
+    @Test
+    fun bracketsInTheQueryKeepTheHost() {
+        val parsed = SocketIO.url("https://chat.example.com/?ids[]=1")
+        assertEquals("chat.example.com", parsed.host)
+        assertEquals("443", parsed.port)
+        assertEquals("https://chat.example.com:443", parsed.id)
+        assertEquals("ids[]=1", parsed.query)
+    }
+
     private fun lazyOptions(block: SocketManagerOptions.Builder.() -> Unit = {}) =
         SocketManagerOptions {
             autoConnect = false
