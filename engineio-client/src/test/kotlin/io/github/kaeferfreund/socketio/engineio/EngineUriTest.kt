@@ -225,6 +225,26 @@ class EngineUriTest {
         assertEquals("3000", ipv6.port)
     }
 
+    // An `@` after a `\\`, `?` or `#` is not in the authority, so the scheme stays a scheme, as in HttpUrl.
+    @Test
+    fun anAtSignAfterTheAuthorityDoesNotTurnTheSchemeIntoUserInfo() {
+        val userInfo = EngineUri.parse("http:\\\\user@good.example")
+        assertEquals("http", userInfo.protocol)
+        assertEquals("user", userInfo.user)
+        assertEquals("good.example", userInfo.host)
+        for (uri in listOf(
+            "http:\\\\good.example\\@evil.example/",
+            "http:good.example?a=@b",
+            "http:good.example#a@b",
+            "http:\\good.example?token=a@b",
+        )) {
+            val parsed = EngineUri.parse(uri)
+            assertEquals("http", parsed.protocol, uri)
+            assertEquals("good.example", parsed.host, uri)
+            assertEquals("", parsed.userInfo, uri)
+        }
+    }
+
     @Test
     fun aSchemeNameFollowedByAPortOrUserInfoIsStillAHost() {
         val port = EngineUri.parse("http:8080")

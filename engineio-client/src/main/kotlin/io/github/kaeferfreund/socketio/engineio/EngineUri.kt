@@ -70,8 +70,9 @@ public object EngineUri {
     // For the same reason any number of `/` and `\` after the scheme is skipped, as HttpUrl does:
     // `http:///good.example`, `https://\good.example` and `http:/good.example` name `good.example`, where
     // JavaScript takes an empty host (and connects to localhost) or the host `http`. Only a scheme name
-    // followed by a bare port (`http:8080`) or by user info (`http:pass@host`) stays part of the authority.
-    private const val SCHEME = "(?![^:@/?#]+:[^:@/]*@)((?i:http|https|ws|wss)):(?:[/\\\\]+|(?!\\d*(?:[/?#\\\\]|$)))"
+    // followed by a bare port (`http:8080`) or by user info (`http:pass@host`) stays part of the authority;
+    // an `@` after a `\`, `?` or `#` is not user info, so `http:\\user@good.example` still names `good.example`.
+    private const val SCHEME = "(?![^:@/?#]+:[^:@/?#\\\\]*@)((?i:http|https|ws|wss)):(?:[/\\\\]+|(?!\\d*(?:[/?#\\\\]|$)))"
 
     private val PARSE_URI =
         Regex(

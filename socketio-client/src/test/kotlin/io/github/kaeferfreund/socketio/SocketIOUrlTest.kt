@@ -147,6 +147,15 @@ class SocketIOUrlTest {
         assertEquals("wss://good.example:443", SocketIO.url("wss://\\good.example").id)
         assertEquals("https://good.example:443", SocketIO.url("http:pass@good.example").id)
         assertEquals("https://http:8080", SocketIO.url("http:8080").id)
+        for (uri in listOf(
+            "http:\\\\user@good.example",
+            "http:\\\\good.example\\@evil.example/",
+            "http:good.example?a=@b",
+            "http:good.example#a@b",
+            "http:\\good.example?token=a@b",
+        )) {
+            assertEquals("http://good.example:80", SocketIO.url(uri).id, uri)
+        }
     }
 
     private fun lazyOptions(block: SocketManagerOptions.Builder.() -> Unit = {}) =
