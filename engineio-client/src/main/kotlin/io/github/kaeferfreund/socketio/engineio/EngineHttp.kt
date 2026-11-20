@@ -32,7 +32,8 @@ public class EngineHttpRequest(
     /** Maximum response body bytes to accept; larger bodies fail the request. */
     public val maxResponseBytes: Long = Long.MAX_VALUE,
 ) {
-    override fun toString(): String = "EngineHttpRequest($method $url)"
+    /** Method and URL, with query values and user info redacted: they may carry the session id or tokens. */
+    override fun toString(): String = "EngineHttpRequest($method ${redactUrl(url)})"
 }
 
 /** A completed HTTP exchange. */
@@ -80,7 +81,26 @@ public class EngineWebSocketRequest(
      */
     public val compressionThreshold: Int?,
 ) {
-    override fun toString(): String = "EngineWebSocketRequest($url)"
+    /** The URL, with query values and user info redacted: they may carry the session id or tokens. */
+    override fun toString(): String = "EngineWebSocketRequest(${redactUrl(url)})"
+}
+
+private const val REDACTED = "***"
+
+/** [url] for logs: query parameter names stay, their values and any user info are replaced. */
+internal fun redactUrl(url: String): String {
+    val authorityStart = url.indexOf("://").let { if (it < 0) 0 else it + 3 }
+    val authorityEnd = url.indexOfAny(charArrayOf('/', '?', '#'), authorityStart).let { if (it < 0) url.length else it }
+    val at = url.lastIndexOf('@', authorityEnd - 1)
+    val withoutUserInfo = if (at >= authorityStart) url.substring(0, authorityStart) + REDACTED + url.substring(at) else url
+    val queryStart = withoutUserInfo.indexOf('?')
+    if (queryStart < 0) return withoutUserInfo
+    val query =
+        withoutUserInfo.substring(queryStart + 1).substringBefore('#').split('&').joinToString("&") { parameter ->
+            val eq = parameter.indexOf('=')
+            if (eq < 0) parameter else parameter.substring(0, eq + 1) + REDACTED
+        }
+    return withoutUserInfo.substring(0, queryStart + 1) + query
 }
 
 /** An open (or opening) WebSocket. Every method may be called from any thread. */

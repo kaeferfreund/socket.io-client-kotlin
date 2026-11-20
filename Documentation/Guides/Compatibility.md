@@ -76,6 +76,42 @@ The API follows the JavaScript client (`emit`, `timeout`, `volatile`, `onAny`,
 `onAnyOutgoing`, `emitWithAck`, `SocketIO.io` lookup); the complete comparison,
 including deliberate differences, is in [PARITY.md](../../PARITY.md).
 
+## Engine.IO connection hardening
+
+The Engine.IO connection follows the JavaScript client, except where a server
+could otherwise make it open connections, keep running or buffer data without
+bound. A well-behaved server never notices these differences.
+
+- **Upgrade offers.** Each transport in the handshake's `upgrades` list is
+  probed at most once, and never the transport already in use. JavaScript opens
+  one probe connection per entry, duplicates included.
+- **Repeated handshakes.** An `open` packet after the handshake is ignored.
+  JavaScript handles it as a new handshake and probes again.
+- **Heartbeat replies.** While a write is pending, one buffered pong answers
+  every ping that arrives. JavaScript buffers one pong per ping, so a server
+  that stalls the write could grow the buffer without bound.
+- **Cookies.** With `withCredentials`, the cookie jar keeps the limits
+  browsers apply to one site: at most 180 cookies (the oldest makes room) and
+  at most 4096 bytes of name and value per cookie. The jar of the JavaScript
+  Node client is unbounded. It also ignores `Path`; here, when transports use
+  different paths (`TransportOverrides.path`), a cookie set by one transport
+  reaches another only if its `Path` matches that path as in a browser. On the
+  path that set it, a cookie is always sent back, so connections whose
+  transports share a path behave as in JavaScript.
+- **Polling responses.** The packets of a polling response are decoded and
+  handled one at a time; JavaScript first decodes the whole response into a
+  list.
+- **Closing.** `close()` still flushes buffered packets first, but a closing
+  engine no longer extends its heartbeat deadline when a ping arrives. It does
+  not answer pings either (as in JavaScript), so the server drops the session by
+  then anyway. A server that never completes the pending write therefore cannot
+  keep a closed connection polling: it ends with `"ping timeout"` after at most
+  `pingInterval + pingTimeout`.
+- **Pending requests.** When the polling transport closes, its pending poll and
+  writes are cancelled, also during an upgrade. Only the close packet is still
+  sent, with `requestTimeout` or at most 10 seconds. JavaScript leaves every
+  request running until the server answers.
+
 ## Platforms
 
 | Component | Requirement |

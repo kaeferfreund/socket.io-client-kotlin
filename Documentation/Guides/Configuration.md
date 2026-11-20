@@ -95,7 +95,9 @@ Notes:
   sessions), set an OkHttp `CookieJar` with `okHttp { configure { cookieJar(…) } }`.
   The application's `CookieManager` is never used implicitly. A cookie whose name
   or value is not printable ASCII is ignored: it could not be sent back in a
-  request header.
+  request header. The jar keeps browser limits (180 cookies, 4096 bytes each) and
+  honours `Path` between transports with different paths; see
+  [Compatibility](Compatibility.md#engineio-connection-hardening).
 - `extraHeaders` holds one value per name. Join repeated values with `", "`.
   Header names and values must be ASCII; a request with a value OkHttp refuses
   (or a malformed URL) fails with a transport error (`"xhr poll error"`,

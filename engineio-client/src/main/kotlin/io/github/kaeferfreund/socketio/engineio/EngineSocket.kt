@@ -202,6 +202,9 @@ public class EngineSocket(
         events.emit(EngineEvent.Heartbeat)
         when (packet.type) {
             EngineIOPacketType.OPEN -> {
+                // JavaScript treats every OPEN packet as a new handshake, so a server repeating it
+                // starts another round of upgrade probes each time. Only the first one counts.
+                if (id != null) return
                 val handshake = parseHandshake(packet.text)
                 if (handshake == null) {
                     onError(TransportException("invalid handshake"))
@@ -211,10 +214,16 @@ public class EngineSocket(
             }
 
             EngineIOPacketType.PING -> {
-                sendPacket(EngineIOPacketType.PONG, null, EngineIOPacketOptions.DEFAULT, null)
+                // One pong waiting for the transport answers every ping: JavaScript queues one per
+                // ping, so pings during a stalled write would grow the buffer without bound.
+                if (!hasUnsentPong()) sendPacket(EngineIOPacketType.PONG, null, EngineIOPacketOptions.DEFAULT, null)
                 events.emit(EngineEvent.Ping)
                 events.emit(EngineEvent.Pong)
-                resetPingTimeout()
+                // A closing engine no longer answers pings (sendPacket drops the pong, as in
+                // JavaScript), so the server times the session out by the current deadline.
+                // JavaScript still extends that deadline, which lets a server that never
+                // completes the pending write keep a closed connection polling forever.
+                if (readyState != EngineState.CLOSING) resetPingTimeout()
             }
 
             EngineIOPacketType.ERROR -> onError(EngineServerException(packet.text))
@@ -225,8 +234,13 @@ public class EngineSocket(
         }
     }
 
+    /** Whether a pong is buffered that was not yet handed to the transport. */
+    private fun hasUnsentPong(): Boolean = (prevBufferLen until buffer.size).any { buffer[it].type == EngineIOPacketType.PONG }
+
     private fun onHandshake(handshake: Handshake) {
-        upgrades = handshake.upgrades.filter { it in transportNames }
+        // Unlike JavaScript, a transport is probed at most once and never the one in use:
+        // each offer opens a connection, and the server controls the list.
+        upgrades = filterUpgrades(handshake.upgrades).distinct().filter { it != transport?.name }
         events.emit(EngineEvent.HandshakeReceived(handshake))
         id = handshake.sid
         transport?.query?.set("sid", handshake.sid)

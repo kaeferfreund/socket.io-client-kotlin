@@ -148,11 +148,23 @@ public abstract class EngineTransport(
         doOpen()
     }
 
-    /** Closes the transport if it is opening or open. */
+    /**
+     * Closes the transport if it is opening or open. A transport that is
+     * pausing for an upgrade is only marked closed, so it releases what it
+     * still has pending.
+     */
     public fun close() {
-        if (readyState == TransportState.OPENING || readyState == TransportState.OPEN) {
-            doClose()
-            onClose(null)
+        when (readyState) {
+            TransportState.OPENING, TransportState.OPEN -> {
+                doClose()
+                onClose(null)
+            }
+
+            // JavaScript ignores close() here, which leaves the poll a pausing transport waits
+            // for running after the engine closed in the middle of an upgrade.
+            TransportState.PAUSING -> onClose(null)
+
+            else -> Unit
         }
     }
 
@@ -215,7 +227,7 @@ public abstract class EngineTransport(
     /** Header list with the configured extra headers and the cookie jar. */
     protected fun requestHeaders(): MutableList<Pair<String, String>> {
         val headers = options.extraHeaders.entries.mapTo(ArrayList()) { it.key to it.value }
-        options.cookieJar?.cookieHeader()?.let { headers.add("cookie" to it) }
+        options.cookieJar?.cookieHeader(options.path)?.let { headers.add("cookie" to it) }
         return headers
     }
 
