@@ -55,6 +55,12 @@ public class ResponseTooLargeException(
  *
  * Configure TLS, proxies, cookies, DNS or the socket factory on [client]
  * (see [TlsPolicy] and the Android module).
+ *
+ * OkHttp reads (and, with permessage-deflate, inflates) each incoming WebSocket
+ * message completely before [EngineWebSocketListener.onMessage] runs and has no
+ * limit for it; [EngineHttpRequest.maxResponseBytes] bounds polling responses only.
+ * Without compression ([EngineWebSocketRequest.compressionThreshold] `null`) the
+ * extension is not offered, and a handshake response that enables it anyway fails.
  */
 public class OkHttpEngineClients(
     client: OkHttpClient = defaultClient,

@@ -103,7 +103,9 @@ Notes:
 - **Compression:** OkHttp negotiates `permessage-deflate` and compresses messages
   by size only (`perMessageDeflateThreshold`). The per-message flag of
   `socket.compress(false)` is carried to the transport, but OkHttp offers no way to
-  switch compression off for a single frame.
+  switch compression off for a single frame. With `perMessageDeflateThreshold = null`
+  the extension is not offered, and a server that enables it anyway fails the
+  handshake (`"websocket error"`).
 - **Large WebSocket messages:** OkHttp queues at most 16 MiB of outgoing WebSocket
   data. The transport hands it only what fits and waits for the rest, so bursts of
   large emits do not close the connection; a single message above 16 MiB cannot be
@@ -321,10 +323,16 @@ exist for apps that process untrusted or unusually large input.
 | `reviver` | `null` (`JSON.parse` reviver) |
 
 A packet over a parser limit closes the connection with `"parse error"`; the
-manager reconnects. On WebSocket, OkHttp reads each incoming message completely
-before the client sees it and has no size limit of its own, so these limits bound
-what is processed, not that buffer. For a server you do not trust, prefer polling
-with `maxPollingResponseBytes`, which is enforced while reading.
+manager reconnects. On WebSocket, OkHttp reads each incoming message completely,
+and inflates it when `permessage-deflate` was negotiated (the default), before the
+client sees it. OkHttp has no size limit for this buffer and offers no hook to set
+one, and a compressed message can grow to about a thousand times the bytes sent.
+The parser limits therefore bound what is processed, not that buffer, and
+`maxPollingResponseBytes` does not apply to WebSocket. For a server you do not
+trust, use polling only (`transports = listOf(Transport.POLLING)`) with
+`maxPollingResponseBytes`, which is enforced while reading. Where WebSocket is
+needed, `perMessageDeflateThreshold = null` at least keeps compression off, so a
+message takes no more memory than the server actually sends.
 
 `SocketBufferLimits` (`bufferLimits`) bounds what is kept across packets:
 `maxSendBufferPackets`/`Bytes`, `maxRetryQueuePackets`/`Bytes`,
