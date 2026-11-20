@@ -1,0 +1,263 @@
+# AI security review of every pull request diff by several models, each
+# through its provider's CLI:
+#   claude       Claude Code, claude-opus-5-5          (secret CLAUDE_API_KEY)
+#   codex-astra  Codex CLI, gpt-6.2-astra              (secret OPENAI_API_KEY)
+#   codex-sol    Codex CLI, gpt-6.2-sol                (secret OPENAI_API_KEY)
+#   glm          OpenCode, opencode-go/glm-5.3-flash   (secret OPENCODE_API_KEY)
+#   kimi         fx on Vercel AI Gateway/Token Pass,
+#                moonshotai/kimi-k3.1-pro              (secret AI_GATEWAY_API_KEY)
+# Each reviewer is its own check and fails on findings and on any error. The
+# report job writes one shared PR comment. Fork PRs get no secrets and are
+# skipped.
+#
+# The pull request must not be able to steer its reviewers: the prompt comes
+# from the base branch (only when it is first introduced from the PR itself),
+# agent instruction files (AGENTS.md, CLAUDE.md, agent configurations, skills)
+# are reset to the base branch before the run, and every reviewer only reads
+# (Claude --bare/--restricted with git diff/log/show, Codex in the read-only
+# sandbox, OpenCode without edit/webfetch and with bash only for git). Each
+# step sees only the secret of its own provider. Limit: on `pull_request` the
+# workflow file itself comes from the PR; anyone who can push branches here
+# has write access anyway.
+name: Security Review
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  review:
+    name: ${{ matrix.name }}
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: claude
+            name: "Security: Claude Opus 5.5"
+            model: claude-opus-5-5
+          - id: codex-astra
+            name: "Security: GPT-6.2 Astra"
+            model: gpt-6.2-astra
+          - id: codex-sol
+            name: "Security: GPT-6.2 Sol"
+            model: gpt-6.2-sol
+          - id: glm
+            name: "Security: GLM 5.3 Flash"
+            model: opencode-go/glm-5.3-flash
+          - id: kimi
+            name: "Security: Kimi K3.1 Pro"
+            model: moonshotai/kimi-k3.1-pro
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      - name: Prompt and agent files from the base branch
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git rev-parse --verify --quiet "origin/$BASE_REF" > /dev/null
+          PROMPT_FILE=.github/security-review/prompt.md
+          if git cat-file -e "origin/$BASE_REF:$PROMPT_FILE" 2>/dev/null; then
+            git show "origin/$BASE_REF:$PROMPT_FILE" > "$RUNNER_TEMP/prompt.raw"
+          else
+            cp "$PROMPT_FILE" "$RUNNER_TEMP/prompt.raw"
+          fi
+          envsubst '$BASE_REF' < "$RUNNER_TEMP/prompt.raw" > "$RUNNER_TEMP/prompt.md"
+          # Do not take agent instruction and configuration files from the PR.
+          # git diff origin/$BASE_REF...HEAD compares commits and still shows
+          # changes to them.
+          for p in AGENTS.md CLAUDE.md .claude .codex .opencode opencode.json opencode.jsonc .fx .fx.json .agents; do
+            rm -rf -- "$p"
+            if git cat-file -e "origin/$BASE_REF:$p" 2>/dev/null; then
+              git checkout "origin/$BASE_REF" -- "$p"
+            fi
+          done
+
+      - name: Review with Claude
+        if: matrix.id == 'claude'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
+          MODEL: ${{ matrix.model }}
+        run: |
+          [ -n "$ANTHROPIC_API_KEY" ] || { echo "::error::Secret CLAUDE_API_KEY is missing"; exit 1; }
+          npm install --global @anthropic-ai/claude-code@2.1.328
+          claude -p "$(cat "$RUNNER_TEMP/prompt.md")" \
+            --model "$MODEL" \
+            --bare --restricted --strict-mcp-config \
+            --tools Read Grep Glob Bash \
+            --allowedTools "Read" "Grep" "Glob" "Bash(git diff:*)" "Bash(git log:*)" "Bash(git show:*)" \
+            --output-format json > "$RUNNER_TEMP/claude.json"
+          jq -e '.is_error == false' "$RUNNER_TEMP/claude.json" > /dev/null || { jq . "$RUNNER_TEMP/claude.json"; exit 1; }
+          jq -r '.result' "$RUNNER_TEMP/claude.json" > review.md
+
+      - name: Review with Codex
+        if: startsWith(matrix.id, 'codex-')
+        env:
+          CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          MODEL: ${{ matrix.model }}
+        run: |
+          [ -n "$CODEX_API_KEY" ] || { echo "::error::Secret OPENAI_API_KEY is missing"; exit 1; }
+          npm install --global @openai/codex@0.170.0
+          # Ubuntu 24.04 blocks unprivileged user namespaces, which the Codex
+          # sandbox needs.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          export CODEX_HOME="$RUNNER_TEMP/codex-home"
+          mkdir -p "$CODEX_HOME"
+          codex exec \
+            --model "$MODEL" \
+            --sandbox read-only \
+            --ephemeral --ignore-user-config --ignore-rules --skip-git-repo-check \
+            -c model_reasoning_effort=high \
+            -c project_doc_max_bytes=0 \
+            --output-last-message review.md \
+            - < "$RUNNER_TEMP/prompt.md"
+
+      - name: Review with GLM (OpenCode)
+        if: matrix.id == 'glm'
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          MODEL: ${{ matrix.model }}
+          OPENCODE_DISABLE_AUTOUPDATE: "1"
+          OPENCODE_CONFIG_CONTENT: >-
+            {"$schema": "https://opencode.ai/config.json", "share": "disabled",
+            "permission": {"edit": "deny", "webfetch": "deny",
+            "bash": {"*": "deny", "git diff*": "allow", "git log*": "allow", "git show*": "allow"}}}
+        run: |
+          [ -n "$OPENCODE_API_KEY" ] || { echo "::error::Secret OPENCODE_API_KEY is missing"; exit 1; }
+          npm install --global opencode-ai@1.19.6
+          opencode run --model "$MODEL" --variant high --format json \
+            "$(cat "$RUNNER_TEMP/prompt.md")" > "$RUNNER_TEMP/opencode.jsonl"
+          if jq -e -s 'any(.[]; .type == "error")' "$RUNNER_TEMP/opencode.jsonl" > /dev/null; then
+            jq -c 'select(.type == "error")' "$RUNNER_TEMP/opencode.jsonl"; exit 1
+          fi
+          jq -r -s '[.[] | select(.type == "text")] | last | .part.text // empty' "$RUNNER_TEMP/opencode.jsonl" > review.md
+
+      - name: Review with Kimi (fx, Vercel Token Pass)
+        if: matrix.id == 'kimi'
+        env:
+          AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
+          MODEL: ${{ matrix.model }}
+          FX_VERSION: v0.0.17
+          FX_SHA256: 78c155d59fa59e42fd56d93037fd75041868c9c67865e8c7f0ca6dcdfac23e75
+          FX_AUTO_UPGRADE: "0"
+          FX_DISABLE_KEYCHAIN: "1"
+        run: |
+          [ -n "$AI_GATEWAY_API_KEY" ] || { echo "::error::Secret AI_GATEWAY_API_KEY is missing"; exit 1; }
+          curl -fsSL "https://releases.fx.sh/$FX_VERSION/fx-linux-x86_64.tar.gz" -o "$RUNNER_TEMP/fx.tar.gz"
+          echo "$FX_SHA256  $RUNNER_TEMP/fx.tar.gz" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/fx.tar.gz" -C "$RUNNER_TEMP" fx
+          "$RUNNER_TEMP/fx" ask \
+            --provider gateway --model "$MODEL" --effort high --no-fast \
+            --no-save --auto --json \
+            < "$RUNNER_TEMP/prompt.md" > "$RUNNER_TEMP/fx.json"
+          jq -e '.exit_code == 0' "$RUNNER_TEMP/fx.json" > /dev/null || { jq 'del(.output)' "$RUNNER_TEMP/fx.json"; exit 1; }
+          jq -r '.final_output' "$RUNNER_TEMP/fx.json" > review.md
+
+      - name: Evaluate the report
+        id: result
+        run: |
+          [ -s review.md ] || { echo "::error::Empty report"; exit 1; }
+          cat review.md >> "$GITHUB_STEP_SUMMARY"
+          # Only the last non-empty line counts; bold and backticks are tolerated.
+          LAST=$(grep -v '^[[:space:]]*$' review.md | tail -1 | tr -d '*`' || true)
+          COUNT=$(printf '%s\n' "$LAST" | sed -nE 's/^[[:space:]]*FINDINGS:[[:space:]]*([0-9]+)[[:space:]]*$/\1/p')
+          if [ -z "$COUNT" ]; then echo "::error::No FINDINGS line in the report"; exit 1; fi
+          echo "$COUNT" > count.txt
+
+      - name: Keep the report
+        if: always()
+        env:
+          NAME: ${{ matrix.name }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/out"
+          [ -f review.md ] && cp review.md "$RUNNER_TEMP/out/review.md"
+          if [ -f count.txt ]; then cp count.txt "$RUNNER_TEMP/out/count.txt"; else echo "error" > "$RUNNER_TEMP/out/count.txt"; fi
+          printf '%s\n' "${NAME#Security: }" > "$RUNNER_TEMP/out/name.txt"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: security-review-${{ matrix.id }}
+          path: ${{ runner.temp }}/out
+          retention-days: 7
+
+      - name: Fail on findings
+        run: |
+          COUNT=$(cat count.txt)
+          if [ "$COUNT" != "0" ]; then echo "::error::$COUNT security finding(s), see the PR comment"; exit 1; fi
+
+  report:
+    name: "Security: Report"
+    needs: review
+    if: always() && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write # shared PR comment
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: security-review-*
+          path: reviews
+
+      - name: PR comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          MARKER='<!-- security-review -->'
+          {
+            echo "$MARKER"
+            echo "### AI security review ($HEAD_SHA)"
+            echo
+            echo "| Reviewer | Findings |"
+            echo "| --- | --- |"
+            for d in reviews/security-review-*/; do
+              [ -d "$d" ] || continue
+              echo "| $(cat "$d/name.txt") | $(cat "$d/count.txt") |"
+            done
+            echo
+            for d in reviews/security-review-*/; do
+              [ -d "$d" ] || continue
+              COUNT=$(cat "$d/count.txt")
+              OPEN=""; [ "$COUNT" != "0" ] && OPEN=" open"
+              echo "<details$OPEN><summary><b>$(cat "$d/name.txt")</b>: $COUNT</summary>"
+              echo
+              if [ -s "$d/review.md" ]; then cat "$d/review.md"; else echo "No report, see the [run]($RUN_URL)."; fi
+              echo
+              echo "</details>"
+              echo
+            done
+          } > comment.md
+          cat comment.md >> "$GITHUB_STEP_SUMMARY"
+          ID=$(gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments" \
+            -q ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$MARKER\"))) | .id" | tail -1)
+          if [ -n "$ID" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$ID" -F body=@comment.md > /dev/null
+          else
+            gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file comment.md
+          fi
