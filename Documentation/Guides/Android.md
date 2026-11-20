@@ -242,7 +242,7 @@ on `<application>`. `TlsPolicy.customTrust(…)` replaces the platform trust man
 for this client, so the config's trust anchors and pins no longer apply to it
 (declare pins in the `TlsPolicy` then); cleartext rules still apply. A client
 certificate alone (`withKeyChainAlias`, `withClientCertificate`) keeps the
-platform trust manager.
+trust manager of the base client: the platform's, or that of your `okHttpClient`.
 
 ## R8 and ProGuard
 

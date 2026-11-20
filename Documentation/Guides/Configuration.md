@@ -212,6 +212,12 @@ client, which removes network binding and traffic tagging.
 Host patterns follow OkHttp's `CertificatePinner`: `api.example.com`,
 `*.example.com` (one label) or `**.example.com` (any depth).
 
+A policy is applied on top of the base client (`client` in `okHttp { }`,
+`okHttpClient` on Android) and never removes its restrictions. Without
+`customTrust`, the base client's trust manager stays in charge, also when a client
+certificate is added. Pins are added to the base client's `CertificatePinner`;
+as in OkHttp, a host matched by several patterns accepts any of their pins.
+
 ```kotlin
 import io.github.kaeferfreund.socketio.okhttp.TlsPolicy
 

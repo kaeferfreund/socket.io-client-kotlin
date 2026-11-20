@@ -18,6 +18,7 @@ import java.net.InetAddress
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 import javax.net.ssl.SSLException
+import javax.net.ssl.SSLPeerUnverifiedException
 
 /** [TlsPolicy] against a TLS MockWebServer with a private CA. */
 class TlsPolicyTest {
@@ -41,11 +42,14 @@ class TlsPolicyTest {
         server.start(loopback, 0)
     }
 
-    private fun call(policy: TlsPolicy): Result<EngineHttpResponse> {
+    private fun call(
+        policy: TlsPolicy,
+        base: OkHttpClient.Builder = OkHttpClient.Builder(),
+    ): Result<EngineHttpResponse> {
         server.enqueue(MockResponse.Builder().body("ok").build())
         // "localhost" must reach the server on its only address. Where it also resolves to ::1,
         // OkHttp's fast fallback would report the refused IPv6 route instead of the TLS failure.
-        val clients = OkHttpEngineClients(policy.applyTo(OkHttpClient.Builder()).dns { listOf(loopback) }.build())
+        val clients = OkHttpEngineClients(policy.applyTo(base).dns { listOf(loopback) }.build())
         val future = CompletableFuture<Result<EngineHttpResponse>>()
         val url = server.url("/socket.io/").newBuilder().host("localhost").build().toString()
         clients.execute(
@@ -108,6 +112,65 @@ class TlsPolicyTest {
         val client = HeldCertificate.Builder().signedBy(ca).commonName("client").build()
         val keyManager = HandshakeCertificates.Builder().heldCertificate(client, ca.certificate).build().keyManager
         assertTrue(call(TlsPolicy.systemDefault().withClientCertificate(keyManager)).exceptionOrNull() is SSLException)
+    }
+
+    /** A base client that trusts only [anchor], as an application configures it before handing it over. */
+    private fun baseTrusting(anchor: HeldCertificate): OkHttpClient.Builder {
+        val trust = HandshakeCertificates.Builder().addTrustedCertificate(anchor.certificate).build()
+        return OkHttpClient.Builder().sslSocketFactory(trust.sslSocketFactory(), trust.trustManager)
+    }
+
+    private fun clientKeyManager() =
+        HandshakeCertificates.Builder()
+            .heldCertificate(HeldCertificate.Builder().signedBy(ca).commonName("client").build(), ca.certificate)
+            .build()
+            .keyManager
+
+    // A client certificate without customTrust keeps the trust of the client it is applied to:
+    // the base client's private CA, not the system store.
+    @Test
+    fun aClientCertificateKeepsTheTrustOfTheBaseClient() {
+        startHttps(requireClientAuth = true)
+        assertEquals("ok", call(TlsPolicy.systemDefault().withClientCertificate(clientKeyManager()), baseTrusting(ca)).getOrThrow().body)
+    }
+
+    @Test
+    fun aClientCertificateDoesNotWidenTheTrustOfTheBaseClient() {
+        startHttps(requireClientAuth = true)
+        val result = call(TlsPolicy.systemDefault().withClientCertificate(clientKeyManager()), baseTrusting(otherCa))
+        assertTrue(result.exceptionOrNull() is SSLException)
+    }
+
+    // Policy pins for one host must not drop the base client's pins for another.
+    @Test
+    fun policyPinsKeepThePinsOfTheBaseClient() {
+        startHttps()
+        val base =
+            baseTrusting(ca).certificatePinner(
+                CertificatePinner.Builder().add("localhost", CertificatePinner.pin(otherCa.certificate)).build(),
+            )
+        val result = call(TlsPolicy.pinned("api.example.com", CertificatePinner.pin(leaf.certificate)), base)
+        assertTrue(result.exceptionOrNull() is SSLPeerUnverifiedException)
+    }
+
+    @Test
+    fun policyPinsAreAddedToThePinnerOfTheBaseClient() {
+        val basePin = CertificatePinner.pin(otherCa.certificate)
+        val base = OkHttpClient.Builder().certificatePinner(CertificatePinner.Builder().add("**.example.com", basePin).build())
+        val pins = TlsPolicy.pinned("api.example.com", CertificatePinner.pin(leaf.certificate)).applyTo(base).build().certificatePinner.pins
+        assertEquals(
+            setOf("**.example.com" to basePin, "api.example.com" to CertificatePinner.pin(leaf.certificate)),
+            pins.map { it.pattern to it.toString() }.toSet(),
+        )
+    }
+
+    // The default base client: nothing to keep, so the policy's own pinner and the platform trust apply as before.
+    @Test
+    fun aDefaultBaseClientGetsThePolicyAsBefore() {
+        val pin = CertificatePinner.pin(leaf.certificate)
+        val client = TlsPolicy.pinned("localhost", pin).withClientCertificate(clientKeyManager()).applyTo(OkHttpClient.Builder()).build()
+        assertEquals(listOf("localhost" to pin), client.certificatePinner.pins.map { it.pattern to it.toString() })
+        assertEquals(OkHttpClient().x509TrustManager!!.javaClass, client.x509TrustManager!!.javaClass)
     }
 
     @Test
