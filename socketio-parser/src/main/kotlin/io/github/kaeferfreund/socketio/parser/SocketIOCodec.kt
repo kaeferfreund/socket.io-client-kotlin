@@ -51,6 +51,11 @@ public class SocketParserOptions(
  * EVENT and ACK packets containing [SocketIOValue.Binary] anywhere become
  * BINARY_EVENT/BINARY_ACK: the header text with `{"_placeholder":true,"num":n}`
  * markers, followed by one binary frame per attachment.
+ *
+ * As in JavaScript, nothing is escaped: the namespace is written verbatim
+ * before a `,`, so it must not contain `,` or U+001E, and an application
+ * object shaped like a placeholder inside a binary packet is read as one by
+ * the receiver. Do not build namespaces or such objects from untrusted input.
  */
 public class SocketIOEncoder {
     /** Encodes [packet]; the first element is the text header, the rest are attachments. */

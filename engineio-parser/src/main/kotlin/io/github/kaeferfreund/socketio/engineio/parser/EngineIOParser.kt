@@ -75,6 +75,12 @@ public object EngineIOParser {
     /**
      * Encodes packets into one HTTP long-polling payload (`encodePayload`).
      * Binary data is always Base64-encoded, as the text body requires.
+     *
+     * Like JavaScript, text is not checked for [SEPARATOR]: a text message
+     * containing U+001E is split into two packets by the receiver. Socket.IO
+     * payloads never contain it, because JSON escapes control characters; raw
+     * Engine.IO text and Socket.IO namespaces built from untrusted input must
+     * exclude it.
      */
     public fun encodePayload(packets: List<EngineIOPacket>): String =
         packets.joinToString(SEPARATOR.toString()) { packet ->
