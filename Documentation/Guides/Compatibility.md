@@ -137,6 +137,11 @@ bound. A well-behaved server never notices these differences.
   writes are cancelled, also during an upgrade. Only the close packet is still
   sent, with `requestTimeout` or at most 10 seconds. JavaScript leaves every
   request running until the server answers.
+- **Engines the manager closed.** An engine that the manager closed while it
+  was still sending its buffered packets gets 10 seconds to finish; then it is
+  closed at once and its requests are cancelled. This also applies to engines
+  replaced by a reconnection, and `close()` on the manager waits for (or ends)
+  all of them before the executor stops. JavaScript waits without a limit.
 
 ## Platforms
 

@@ -68,6 +68,9 @@ public class SocketManager(
 
     internal var engine: EngineSocket? = null
         private set
+
+    /** Engines this manager closed that are still sending their last packets. */
+    private val closingEngines = LinkedHashSet<EngineSocket>()
     internal var readyState: ManagerState = ManagerState.CLOSED
         private set
     internal var reconnecting: Boolean = false
@@ -351,13 +354,13 @@ public class SocketManager(
         }
     }
 
-    /** Stops the executor once the engine has flushed its last packets (the DISCONNECTs), at most after [CLOSE_GRACE]. */
+    /**
+     * Stops the executor once every engine this manager closed has flushed its last
+     * packets (the DISCONNECTs), at most after [CLOSE_GRACE]. An engine still closing
+     * then is closed at once, so none of its requests outlives the executor.
+     */
     private fun shutdownWhenEngineClosed() {
-        val closing = engine?.takeIf { it.readyState == EngineState.CLOSING }
-        if (closing == null) {
-            executor.post { executor.shutdown() }
-            return
-        }
+        val closing = closingEngines.toList()
         var done = false
         val finish = {
             if (!done) {
@@ -365,10 +368,30 @@ public class SocketManager(
                 executor.post { executor.shutdown() }
             }
         }
-        closing.events.once<EngineEvent.Close, EngineEvent> { finish() }
-        executor.schedule(CLOSE_GRACE) {
-            closing.forceClose()
+        if (closing.isEmpty()) {
             finish()
+            return
+        }
+        var remaining = closing.size
+        for (engine in closing) engine.events.once<EngineEvent.Close, EngineEvent> { if (--remaining == 0) finish() }
+        executor.schedule(CLOSE_GRACE) {
+            closingEngines.toList().forEach(EngineSocket::forceClose)
+            finish()
+        }
+    }
+
+    /**
+     * Gives a closed [engine] that is still sending its buffered packets at most
+     * [CLOSE_GRACE] to finish. JavaScript waits for it without a limit, so a server
+     * that never completes the pending write (with a heartbeat too long to end it)
+     * kept a replaced engine and its requests running.
+     */
+    private fun retire(engine: EngineSocket) {
+        if (engine.readyState != EngineState.CLOSING || !closingEngines.add(engine)) return
+        val timer = executor.schedule(CLOSE_GRACE) { engine.forceClose() }
+        engine.events.once<EngineEvent.Close, EngineEvent> {
+            timer.cancel()
+            closingEngines -= engine
         }
     }
 
@@ -404,6 +427,9 @@ public class SocketManager(
             fn?.invoke(IllegalStateException("the manager is paused"))
             return
         }
+        // The previous engine was closed when its connection ended; if it is still closing, it
+        // is bounded before the reference to it is replaced.
+        engine?.let(::retire)
         val socket = EngineSocket(uri, options.engine, executor)
         engine = socket
         readyState = ManagerState.OPENING
@@ -439,6 +465,7 @@ public class SocketManager(
                     openSub.cancel()
                     onError(EngineIOException("timeout"))
                     socket.close()
+                    retire(socket)
                 }
             subs.add(timer)
         }
@@ -555,7 +582,10 @@ public class SocketManager(
     ) {
         val wasClosed = readyState == ManagerState.CLOSED
         cleanup()
-        engine?.close()
+        engine?.let {
+            it.close()
+            retire(it)
+        }
         backoff.reset()
         readyState = ManagerState.CLOSED
         transportFlow.value = null

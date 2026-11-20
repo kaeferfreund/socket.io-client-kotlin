@@ -28,6 +28,9 @@ API are unchanged; every difference from the JavaScript client is listed in the
   engine; the buffered packets are sent and the engine closes.
 - Engine.IO: an upgrade probe that fails while the polling transport pauses no
   longer stalls the connection; polling resumes and `close()` does not hang.
+- Socket.IO: an engine the manager closed is ended after at most 10 seconds,
+  also when a reconnection replaced it, so a server that stalls its last write
+  cannot keep requests running.
 - Socket.IO: `clearRecoveryState()` also drops the previous user's pending
   emits, retries and early events, as the user-switch guide relies on;
   acknowledgements are accepted only for emits that were sent; a namespace
