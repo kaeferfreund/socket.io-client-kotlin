@@ -112,6 +112,18 @@ class SocketIOUrlTest {
         assertEquals("ids[]=1", parsed.query)
     }
 
+    @Test
+    fun mixedCaseSchemesAreRecognised() {
+        val parsed = SocketIO.url("HTTPS://example.com/chat")
+        assertEquals("https", parsed.protocol)
+        assertEquals("example.com", parsed.host)
+        assertEquals("443", parsed.port)
+        assertEquals("/chat", parsed.path)
+        assertEquals("https://example.com:443", parsed.id)
+        assertEquals("https://example.com/chat", parsed.source)
+        assertEquals("ws", SocketIO.url("Ws://example.com", location = SocketIO.BaseLocation("https:", "woot.com")).protocol)
+    }
+
     private fun lazyOptions(block: SocketManagerOptions.Builder.() -> Unit = {}) =
         SocketManagerOptions {
             autoConnect = false

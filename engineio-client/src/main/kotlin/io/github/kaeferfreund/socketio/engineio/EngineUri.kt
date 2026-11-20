@@ -60,9 +60,11 @@ public object EngineUri {
         override fun toString(): String = "Parsed(protocol=$protocol, host=$host, port=$port, path=$path, query=$query)"
     }
 
+    // Deliberate deviation from JavaScript: the scheme matches case-insensitively and is lowercased,
+    // so `HTTPS://host` selects TLS instead of becoming the host name `HTTPS` (RFC 3986, section 3.1).
     private val PARSE_URI =
         Regex(
-            "^(?:(?![^:@/?#]+:[^:@/]*@)(http|https|ws|wss)://)?((?:(([^:@/?#]*)(?::([^:@/?#]*))?)?@)?" +
+            "^(?:(?![^:@/?#]+:[^:@/]*@)((?i:http|https|ws|wss))://)?((?:(([^:@/?#]*)(?::([^:@/?#]*))?)?@)?" +
                 "((?:[a-f0-9]{0,4}:){2,7}[a-f0-9]{0,4}|[^:/?#]*)(?::(\\d*))?)(((/(?:[^?#](?![^?#/]*\\.[^?#/.]+(?:[?#]|$)))*/?)?" +
                 "([^?#/]*))(?:\\?([^#]*))?(?:#(.*))?)",
         )
@@ -117,7 +119,7 @@ public object EngineUri {
         }
         return Parsed(
             source = if (bracketed) uri else group(0),
-            protocol = group(1),
+            protocol = group(1).lowercase(java.util.Locale.ROOT),
             authority = authority,
             userInfo = group(3),
             user = group(4),
@@ -134,7 +136,7 @@ public object EngineUri {
         )
     }
 
-    private val SCHEME_PREFIX = Regex("^(?:http|https|ws|wss)://")
+    private val SCHEME_PREFIX = Regex("^(?:http|https|ws|wss)://", RegexOption.IGNORE_CASE)
 
     private val AUTHORITY_END = charArrayOf('/', '?', '#')
 

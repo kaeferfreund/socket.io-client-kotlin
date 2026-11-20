@@ -2,6 +2,7 @@ package io.github.kaeferfreund.socketio
 
 import io.github.kaeferfreund.socketio.engineio.EngineUri
 import io.github.kaeferfreund.socketio.parser.SocketIOPacket
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -138,9 +139,15 @@ public object SocketIO {
                     requireNotNull(location) { "a relative URL needs a base location" }.host + value
                 }
         }
-        if (!Regex("^(https?|wss?)://").containsMatchIn(value)) {
-            value = (location?.protocol ?: "https:") + "//" + value
-        }
+        // Unlike JavaScript, the scheme matches case-insensitively and is lowercased (RFC 3986, section 3.1):
+        // `HTTPS://host` would otherwise get a second scheme prefixed and resolve to the host `HTTPS`.
+        val scheme = Regex("^(https?|wss?)://", RegexOption.IGNORE_CASE).find(value)
+        value =
+            if (scheme == null) {
+                (location?.protocol ?: "https:") + "//" + value
+            } else {
+                scheme.value.lowercase(Locale.ROOT) + value.substring(scheme.value.length)
+            }
         val parsed = EngineUri.parse(value)
         var port = parsed.port
         if (port.isEmpty()) {

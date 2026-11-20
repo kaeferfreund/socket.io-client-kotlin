@@ -108,6 +108,31 @@ class EngineUriTest {
             assertEquals("443", engine.port)
         }
 
+    @Test
+    fun mixedCaseSchemesAreRecognisedAndLowercased() {
+        val schemes = listOf("HTTPS" to "https", "Http" to "http", "WsS" to "wss", "WS" to "ws")
+        for ((scheme, protocol) in schemes) {
+            val uri = "$scheme://example.com"
+            val parsed = EngineUri.parse(uri)
+            assertEquals(protocol, parsed.protocol, uri)
+            assertEquals("example.com", parsed.host, uri)
+            assertEquals("", parsed.port, uri)
+        }
+        assertTrue(EngineUri.parse("HTTPS://example.com").secure)
+        val ipv6 = EngineUri.parse("HTTPS://[::1]:8443/?a[]=1")
+        assertEquals("https", ipv6.protocol)
+        assertEquals("::1", ipv6.host)
+        assertEquals("8443", ipv6.port)
+    }
+
+    @Test
+    fun theEngineUsesTlsForAMixedCaseHttpsScheme() =
+        runTest {
+            val engine = newEngine("HTTPS://example.com")
+            assertEquals("example.com", engine.hostname)
+            assertEquals("443", engine.port)
+        }
+
     private fun TestScope.newEngine(uri: String): EngineSocket =
         EngineSocket(uri, EngineOptions(), ProtocolExecutor(StandardTestDispatcher(testScheduler), testScheduler.timeSource))
 }
