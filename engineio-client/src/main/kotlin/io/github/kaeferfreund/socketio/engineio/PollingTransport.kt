@@ -248,7 +248,7 @@ public class PollingTransport(
             object : EngineHttpCallback {
                 override fun onResponse(response: EngineHttpResponse) {
                     executor.execute {
-                        jar?.parseCookies(response.headerValues("set-cookie"), options.path)
+                        jar?.parseCookies(response.headerValues("set-cookie"), requestPath)
                         // 1223 is IE's mangled 204; kept for fidelity with the JavaScript check.
                         if (response.status == 200 || response.status == 1223) {
                             onResult(Result.success(response.body))

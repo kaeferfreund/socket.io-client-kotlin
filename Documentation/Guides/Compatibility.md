@@ -121,7 +121,8 @@ bound. A well-behaved server never notices these differences.
   already expired only deletes the stored cookie of its name, so it never makes
   a live one give way. The jar of the JavaScript Node client is unbounded. It also ignores `Path`; here, when transports use
   different paths (`TransportOverrides.path`), a cookie set by one transport
-  reaches another only if its `Path` matches that path as in a browser. On the
+  reaches another only if its `Path` matches that path as in a browser (a path
+  without leading slash counts as the absolute path it requests). On the
   path that set it, a cookie is always sent back, so connections whose
   transports share a path behave as in JavaScript. `Path` is recognised after
   any `;`, with or without a space, as RFC 6265 parses attributes.

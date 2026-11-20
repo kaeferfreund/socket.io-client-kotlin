@@ -142,6 +142,14 @@ public abstract class EngineTransport(
 
     protected val executor: ProtocolExecutor get() = options.executor
 
+    /**
+     * The path this transport requests, which also scopes its cookies.
+     * Deliberate deviation from JavaScript: a path without leading slash ("evil.example/x",
+     * "@evil.example/x") would extend or replace the host, so it is made absolute here.
+     */
+    internal val requestPath: String =
+        if (options.path.isEmpty() || options.path.startsWith('/')) options.path else "/" + options.path
+
     /** Starts connecting. */
     public fun open() {
         readyState = TransportState.OPENING
@@ -223,17 +231,14 @@ public abstract class EngineTransport(
             } else {
                 ""
             }
-        // Deliberate deviation from JavaScript: a path without leading slash ("evil.example/x",
-        // "@evil.example/x") would extend or replace the host, so it is made absolute here.
-        val path = if (options.path.isEmpty() || options.path.startsWith('/')) options.path else "/" + options.path
         val encoded = EngineUri.encodeQuery(query)
-        return schema + "://" + host + port + path + (if (encoded.isNotEmpty()) "?$encoded" else "")
+        return schema + "://" + host + port + requestPath + (if (encoded.isNotEmpty()) "?$encoded" else "")
     }
 
     /** Header list with the configured extra headers and the cookie jar. */
     protected fun requestHeaders(): MutableList<Pair<String, String>> {
         val headers = options.extraHeaders.entries.mapTo(ArrayList()) { it.key to it.value }
-        options.cookieJar?.cookieHeader(options.path)?.let { headers.add("cookie" to it) }
+        options.cookieJar?.cookieHeader(requestPath)?.let { headers.add("cookie" to it) }
         return headers
     }
 

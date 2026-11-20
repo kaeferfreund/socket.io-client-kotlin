@@ -98,7 +98,8 @@ public class EngineCookie(
  * The JavaScript jar also ignores `Path`. When transports use different paths
  * (`TransportOverrides.path`), a cookie set by one transport reaches another
  * only if its `Path` matches that transport's path as in a browser (RFC 6265);
- * on the path that set it, it is always replayed.
+ * on the path that set it, it is always replayed. Transports scope cookies with
+ * the absolute path they request, also when the configured path is relative.
  */
 public class EngineCookieJar(
     private val clock: () -> Instant = Instant::now,

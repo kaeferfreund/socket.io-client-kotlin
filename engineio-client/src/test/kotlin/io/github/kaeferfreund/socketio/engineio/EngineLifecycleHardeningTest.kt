@@ -390,6 +390,62 @@ class EngineLifecycleHardeningTest {
             s.executor.shutdown()
         }
 
+    private fun Setup.webSocketCookie(): String? = ws.connections.single().request.headers.firstOrNull { it.first == "cookie" }?.second
+
+    @Test
+    fun aRelativeTransportPathScopesCookiesLikeTheAbsolutePathItRequests() =
+        runTest {
+            // "socket.io/" is requested as "/socket.io/", the path polling uses.
+            val s =
+                setup(
+                    EngineOptions(
+                        path = "/socket.io",
+                        withCredentials = true,
+                        transportOptions = mapOf("websocket" to TransportOverrides(path = "socket.io")),
+                    ),
+                )
+            s.http.answerPoll(handshake(), headers = listOf("set-cookie" to "elsewhere=1; Path=/admin", "set-cookie" to "sticky=2"))
+            s.settle()
+            assertEquals("elsewhere=1; sticky=2", s.webSocketCookie())
+            s.executor.shutdown()
+        }
+
+    @Test
+    fun aRootCookieFromARelativePathReachesAnotherRelativePath() =
+        runTest {
+            val s =
+                setup(
+                    EngineOptions(
+                        path = "socket.io",
+                        withCredentials = true,
+                        transportOptions = mapOf("websocket" to TransportOverrides(path = "ws")),
+                    ),
+                )
+            s.http.answerPoll(handshake(), headers = listOf("set-cookie" to "root=1; Path=/", "set-cookie" to "scoped=2; Path=/socket.io"))
+            s.settle()
+            assertEquals("root=1", s.webSocketCookie())
+            s.executor.shutdown()
+        }
+
+    @Test
+    fun aCookieWithoutPathFromARelativePathDefaultsToThatPath() =
+        runTest {
+            val s =
+                setup(
+                    EngineOptions(
+                        path = "a/b",
+                        withCredentials = true,
+                        transportOptions = mapOf("websocket" to TransportOverrides(path = "/other")),
+                    ),
+                )
+            s.http.answerPoll(handshake(), headers = listOf("set-cookie" to "implicit=1", "set-cookie" to "root=2; Path=/"))
+            s.settle()
+            // The default path is "/a/b", not "/".
+            assertEquals("root=2", s.webSocketCookie())
+            assertEquals("implicit=1; root=2", s.http.pending("GET").single().request.header("cookie"))
+            s.executor.shutdown()
+        }
+
     @Test
     fun cookiePathsMatchLikeInABrowser() {
         val jar = EngineCookieJar()
