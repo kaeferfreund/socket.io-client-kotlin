@@ -32,4 +32,5 @@ setup are development tools; report problems with them as normal issues.
 - There is no switch that turns certificate verification off; private CAs, pins and
   client certificates go through `TlsPolicy`.
 - CI runs with read-only tokens, pinned action commits and no persisted
-  credentials; Dependabot proposes Gradle and GitHub Actions updates.
+  credentials; Dependabot proposes Gradle and GitHub Actions updates. Release
+  jobs build from source without restoring the Gradle or build cache of CI runs.
