@@ -202,7 +202,7 @@ parity, and emulator runs do not replace field tests on physical devices.
 ### Coverage
 
 Numbers from the validators and coverage reports of CI run
-[36219029130](https://github.com/kaeferfreund/socket.io-client-kotlin/actions/runs/36219029130),
+[44807386514](https://github.com/kaeferfreund/socket.io-client-kotlin/actions/runs/44807386514),
 recorded in [Documentation/ReviewEvidence](Documentation/ReviewEvidence/README.md);
 CI regenerates them on every run.
 
@@ -210,8 +210,8 @@ CI regenerates them on every run.
 
 | Scope | Lines | Branches | Methods |
 | --- | ---: | ---: | ---: |
-| JVM modules, every JVM suite including end-to-end | 97.2&nbsp;% (3 147/3 237) | 83.1&nbsp;% (2 145/2 581) | 92.4&nbsp;% (777/841) |
-| `socketio-android` under Robolectric | 91.7&nbsp;% (277/302) | 74.1&nbsp;% (123/166) | 85.9&nbsp;% (79/92) |
+| JVM modules, every JVM suite including end-to-end | 97.5&nbsp;% (3 397/3 484) | 83.8&nbsp;% (2 365/2 822) | 93.4&nbsp;% (833/892) |
+| `socketio-android` under Robolectric | 92.1&nbsp;% (281/305) | 74.7&nbsp;% (124/166) | 87.1&nbsp;% (81/93) |
 
 The Android numbers leave out the emulator tests, which Kover cannot measure. Most
 uncovered branches are defensive: nullable fallbacks, copy-builder defaults and

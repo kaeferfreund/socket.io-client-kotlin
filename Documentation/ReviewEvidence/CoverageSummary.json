@@ -2,54 +2,54 @@
   "jvm_all_suites": {
     "total": {
       "line": {
-        "covered": 3147,
-        "total": 3237,
-        "percent": 97.2
+        "covered": 3397,
+        "total": 3484,
+        "percent": 97.5
       },
       "branch": {
-        "covered": 2145,
-        "total": 2581,
-        "percent": 83.1
+        "covered": 2365,
+        "total": 2822,
+        "percent": 83.8
       },
       "method": {
-        "covered": 777,
-        "total": 841,
-        "percent": 92.4
+        "covered": 833,
+        "total": 892,
+        "percent": 93.4
       }
     },
     "packages": {
       "io.github.kaeferfreund.socketio.parser": {
         "line": {
-          "covered": 788,
-          "total": 805,
+          "covered": 790,
+          "total": 807,
           "percent": 97.9
         },
         "branch": {
-          "covered": 803,
-          "total": 913,
-          "percent": 88.0
+          "covered": 806,
+          "total": 915,
+          "percent": 88.1
         },
         "method": {
-          "covered": 148,
-          "total": 157,
+          "covered": 149,
+          "total": 158,
           "percent": 94.3
         }
       },
       "io.github.kaeferfreund.socketio.okhttp": {
         "line": {
-          "covered": 154,
-          "total": 166,
-          "percent": 92.8
+          "covered": 209,
+          "total": 225,
+          "percent": 92.9
         },
         "branch": {
-          "covered": 75,
-          "total": 94,
-          "percent": 79.8
+          "covered": 126,
+          "total": 156,
+          "percent": 80.8
         },
         "method": {
-          "covered": 53,
-          "total": 64,
-          "percent": 82.8
+          "covered": 67,
+          "total": 80,
+          "percent": 83.8
         }
       },
       "io.github.kaeferfreund.socketio.engineio.parser": {
@@ -71,26 +71,26 @@
       },
       "io.github.kaeferfreund.socketio": {
         "line": {
-          "covered": 1108,
-          "total": 1126,
+          "covered": 1177,
+          "total": 1196,
           "percent": 98.4
         },
         "branch": {
-          "covered": 673,
-          "total": 841,
-          "percent": 80.0
+          "covered": 727,
+          "total": 897,
+          "percent": 81.0
         },
         "method": {
-          "covered": 294,
-          "total": 305,
-          "percent": 96.4
+          "covered": 304,
+          "total": 316,
+          "percent": 96.2
         }
       },
       "io.github.kaeferfreund.socketio.serialization": {
         "line": {
-          "covered": 57,
-          "total": 59,
-          "percent": 96.6
+          "covered": 66,
+          "total": 67,
+          "percent": 98.5
         },
         "branch": {
           "covered": 41,
@@ -98,26 +98,26 @@
           "percent": 85.4
         },
         "method": {
-          "covered": 19,
+          "covered": 20,
           "total": 21,
-          "percent": 90.5
+          "percent": 95.2
         }
       },
       "io.github.kaeferfreund.socketio.engineio": {
         "line": {
-          "covered": 870,
-          "total": 901,
-          "percent": 96.6
+          "covered": 985,
+          "total": 1009,
+          "percent": 97.6
         },
         "branch": {
-          "covered": 455,
-          "total": 574,
-          "percent": 79.3
+          "covered": 567,
+          "total": 695,
+          "percent": 81.6
         },
         "method": {
-          "covered": 223,
-          "total": 244,
-          "percent": 91.4
+          "covered": 253,
+          "total": 267,
+          "percent": 94.8
         }
       }
     }
@@ -125,37 +125,37 @@
   "android_robolectric": {
     "total": {
       "line": {
-        "covered": 277,
-        "total": 302,
-        "percent": 91.7
+        "covered": 281,
+        "total": 305,
+        "percent": 92.1
       },
       "branch": {
-        "covered": 123,
+        "covered": 124,
         "total": 166,
-        "percent": 74.1
+        "percent": 74.7
       },
       "method": {
-        "covered": 79,
-        "total": 92,
-        "percent": 85.9
+        "covered": 81,
+        "total": 93,
+        "percent": 87.1
       }
     },
     "packages": {
       "io.github.kaeferfreund.socketio.android": {
         "line": {
-          "covered": 277,
-          "total": 302,
-          "percent": 91.7
+          "covered": 281,
+          "total": 305,
+          "percent": 92.1
         },
         "branch": {
-          "covered": 123,
+          "covered": 124,
           "total": 166,
-          "percent": 74.1
+          "percent": 74.7
         },
         "method": {
-          "covered": 79,
-          "total": 92,
-          "percent": 85.9
+          "covered": 81,
+          "total": 93,
+          "percent": 87.1
         }
       }
     }

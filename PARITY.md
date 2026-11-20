@@ -12,7 +12,7 @@ the run for the commit you plan to ship.
 
 **All 252 supported runtime declarations of the four upstream client packages
 have an assertion contract whose Kotlin tests passed in the recorded run (CI run
-36219029130): in its JDK 17 and end-to-end results, 607 distinct tests passed and
+44807386514): in its JDK 17 and end-to-end results, 710 distinct tests passed and
 none failed or was skipped. A parameterized test counts once, a Robolectric test
 once per SDK (34, 36 and 37). The remaining 45 runtime declarations are reviewed
 scope boundaries, listed with reasons below. This is test parity for a defined

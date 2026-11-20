@@ -23,6 +23,6 @@
   "kotlin_extension_contracts": 10,
   "contract_tests": 548,
   "junit_evidence": true,
-  "junit_passed_tests": 607,
+  "junit_passed_tests": 710,
   "junit_failed_or_skipped_tests": 0
 }
