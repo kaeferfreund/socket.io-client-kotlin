@@ -186,7 +186,8 @@ val options = SocketManagerOptions {
 The library derives its own client from yours: read timeout disabled,
 HTTPS→HTTP redirects not followed (`followSslRedirects = false`), polling redirects
 followed only within the same origin (scheme, host and port) so extra headers,
-cookies and request bodies never reach another host, no redirects for the
+cookies, request bodies and a client certificate never reach another host (the
+origin is checked before any connection to the new location), no redirects for the
 WebSocket handshake (as in browsers and Node's `ws`), and at least 64 concurrent
 requests per host. Interceptors, proxy, DNS, cookie jar,
 `connectionSpecs` and call timeouts are kept.

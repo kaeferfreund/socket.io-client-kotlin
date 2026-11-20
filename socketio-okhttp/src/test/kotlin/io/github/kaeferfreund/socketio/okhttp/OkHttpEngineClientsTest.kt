@@ -231,6 +231,67 @@ class OkHttpEngineClientsTest {
         }
     }
 
+    // The origin is checked before the redirect is followed: no DNS lookup, TCP connection or TLS
+    // handshake (which could present a client certificate) reaches the other origin.
+    @Test
+    fun aRedirectToAnotherOriginOpensNoConnectionToIt() {
+        val other = MockWebServer()
+        other.start()
+        try {
+            val connected = java.util.Collections.synchronizedList(mutableListOf<Int>())
+            val base =
+                okhttp3.OkHttpClient.Builder()
+                    .eventListener(
+                        object : okhttp3.EventListener() {
+                            override fun connectStart(
+                                call: okhttp3.Call,
+                                inetSocketAddress: java.net.InetSocketAddress,
+                                proxy: java.net.Proxy,
+                            ) {
+                                connected += inetSocketAddress.port
+                            }
+                        },
+                    ).build()
+            server.enqueue(MockResponse.Builder().code(302).addHeader("Location", other.url("/collect").toString()).build())
+            assertTrue(execute(OkHttpEngineClients(base), get()).exceptionOrNull() is java.net.ProtocolException)
+            assertEquals(listOf(server.port), connected.toList())
+        } finally {
+            other.close()
+        }
+    }
+
+    @Test
+    fun followsSameOriginRedirectsLikeOkHttp() {
+        val clients = OkHttpEngineClients()
+        // 303 turns a POST into a GET without body; 307 and 308 repeat it with its body.
+        val post = EngineHttpRequest("POST", server.url("/socket.io/?EIO=4&sid=a").toString(), listOf("X-Api-Key" to "k"), "4hi", null)
+        server.enqueue(MockResponse.Builder().code(303).addHeader("Location", "/socket.io/?moved=303").build())
+        server.enqueue(MockResponse.Builder().body("got").build())
+        assertEquals("got", execute(clients, post).getOrThrow().body)
+        server.takeRequest()
+        val redirected = server.takeRequest()
+        assertEquals("GET", redirected.method)
+        assertEquals("/socket.io/?moved=303", redirected.target)
+        assertEquals("k", redirected.headers["X-Api-Key"])
+        assertEquals(0L, redirected.bodySize)
+        for (code in listOf(307, 308)) {
+            server.enqueue(MockResponse.Builder().code(code).addHeader("Location", "/socket.io/?moved=$code").build())
+            server.enqueue(MockResponse.Builder().body("posted").build())
+            assertEquals("posted", execute(clients, post).getOrThrow().body)
+            server.takeRequest()
+            val repeated = server.takeRequest()
+            assertEquals("POST", repeated.method)
+            assertEquals("4hi", repeated.body!!.utf8())
+        }
+        // A base client that follows no redirects keeps doing so.
+        server.enqueue(MockResponse.Builder().code(302).addHeader("Location", "/socket.io/?moved=1").build())
+        val noRedirects = OkHttpEngineClients(okhttp3.OkHttpClient.Builder().followRedirects(false).build())
+        assertEquals(302, execute(noRedirects, get()).getOrThrow().status)
+        // A redirect loop ends like in OkHttp.
+        repeat(21) { server.enqueue(MockResponse.Builder().code(302).addHeader("Location", "/socket.io/?loop=$it").build()) }
+        assertTrue(execute(clients, get()).exceptionOrNull() is java.net.ProtocolException)
+    }
+
     @Test
     fun theWebSocketHandshakeFollowsNoRedirect() {
         val other = MockWebServer()
