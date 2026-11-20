@@ -6,6 +6,56 @@ All notable changes to this project are documented here. The format follows
 
 ## Unreleased
 
+### Behaviour changes
+
+- **Polling follows redirects to other origins, without the first origin's
+  credentials.** 17.1.0 refused every polling redirect to another scheme, host
+  or port. Polling now follows them like a browser, curl and the Swift client,
+  with OkHttp's method rules (303 and, for a POST, 301/302 continue as a GET;
+  307/308 repeat the POST with its body) and at most 20 follow-ups:
+  - on an origin change, `Authorization` and `Proxy-Authorization` are removed;
+  - the `Cookie` header is rebuilt for every hop: cookies of the
+    `withCredentials` jar that RFC 6265 allows for the new URL, and a `Cookie`
+    entry of `extraHeaders` only on the host of the server URL (any scheme or
+    port). `Set-Cookie` headers of redirect responses are stored before the
+    redirect is followed;
+  - HTTP→HTTPS is followed, HTTPS→HTTP never (also not after an HTTP→HTTPS hop);
+  - with a client certificate configured through `TlsPolicy` (or
+    `withKeyChainAlias`), redirects to another origin are still refused, and
+    with certificate pins, a redirect to another host is refused unless a pin
+    covers it. Both are decided before any connection to the target;
+  - other headers, such as an API key in `extraHeaders`, follow the redirect.
+    Send tokens that must stay with your server as `Authorization`.
+  The WebSocket handshake still follows no redirect. See
+  [Redirects and cookies](Documentation/Guides/Configuration.md#redirects-and-cookies).
+- **The `withCredentials` cookie jar is scoped by RFC 6265.** Cookies stored
+  from responses go back only where their `Domain` (host-only without it),
+  `Path`, `Secure` flag and expiry allow; ports do not scope them. A `Domain`
+  the server's host is not part of, a single-label `Domain` and a `Domain` on an
+  IP address host reject the cookie; a `Secure` cookie is sent over HTTPS/WSS
+  only and ignored when set over plain HTTP, except on loopback hosts, which
+  count as secure as in browsers. A cookie now replaces only the one with the
+  same name, domain and path.
+
+Migration:
+
+- A server that relied on the refusal (a redirect to another origin used to fail
+  the request) now sees the redirect followed. To keep refusing, configure your
+  OkHttp client with `followRedirects(false)`: polling then follows no redirect
+  at all.
+- Move tokens from custom headers to `Authorization` if they must not reach a
+  redirect target; custom `extraHeaders` follow redirects.
+- A server on plain HTTP (other than `localhost`) that sets `Secure` cookies no
+  longer gets them back; drop `Secure` there or serve over HTTPS. A server that
+  sets `Domain` to a host its own name is not part of no longer gets the cookie.
+
+### API
+
+- `EngineRedirectCookies` and `EngineHttpRequest.redirectCookies`: the engine
+  hands every polling request the cookies it may carry on redirects. Additive:
+  the existing `EngineHttpRequest` constructor is unchanged, and a custom
+  `EngineHttpClient` that ignores the new property keeps working.
+
 ## 17.1.0 — 2026-11-20
 
 A security release. A review of the whole repository found ways in which a

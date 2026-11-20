@@ -146,9 +146,13 @@ and do not change a certified assertion:
   one is tried; JavaScript only drops its listeners. Unlike JavaScript, this client
   rejects invalid handshakes, which can arrive on an already open polling
   transport that would otherwise keep polling.
-- Polling follows redirects only within the same origin, and the WebSocket
-  handshake none: extra headers, cookies and a POST body are never forwarded to
-  another host. Node's polling client follows every redirect with the same headers.
+- Polling follows redirects to other origins like Node's client, but on an
+  origin change it drops `Authorization` and `Proxy-Authorization` and rebuilds
+  the `Cookie` header from the RFC 6265-scoped cookie jar (an explicit `Cookie`
+  from `extraHeaders` only to the server's host); HTTPS→HTTP is never followed,
+  a configured client certificate keeps redirects within the origin, and pins
+  keep them on pinned hosts. The WebSocket handshake follows none. Node's
+  polling client follows every redirect with the same headers.
 - A hostile server or URL is handled more strictly than in JavaScript: URL parsing
   (brackets, scheme case, relative paths, user info), Engine.IO upgrades, heartbeats,
   cookies and closing, and Socket.IO acknowledgements, namespace CONNECTs and

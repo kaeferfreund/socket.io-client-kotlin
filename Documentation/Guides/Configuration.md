@@ -96,7 +96,9 @@ Notes:
   The application's `CookieManager` is never used implicitly. A cookie whose name
   or value is not printable ASCII is ignored: it could not be sent back in a
   request header. The jar keeps browser limits (180 cookies, 4096 bytes each) and
-  honours `Path` between transports with different paths; see
+  scopes cookies by RFC 6265 (`Domain`, `Path`, `Secure`, expiry), which matters
+  between transports with different paths and on redirects; see
+  [Redirects and cookies](#redirects-and-cookies) and
   [Compatibility](Compatibility.md#engineio-connection-hardening).
 - `extraHeaders` holds one value per name. Join repeated values with `", "`.
   Header names and values must be ASCII; a request with a value OkHttp refuses
@@ -188,17 +190,64 @@ val options = SocketManagerOptions {
 ```
 
 The library derives its own client from yours: read timeout disabled,
-HTTPS→HTTP redirects not followed (`followSslRedirects = false`), polling redirects
-followed only within the same origin (scheme, host and port) so extra headers,
-cookies, request bodies and a client certificate never reach another host (the
-origin is checked before any connection to the new location), no redirects for the
-WebSocket handshake (as in browsers and Node's `ws`), and at least 64 concurrent
-requests per host. Interceptors, proxy, DNS, cookie jar,
-`connectionSpecs` and call timeouts are kept.
+HTTPS→HTTP redirects never followed, polling redirects followed by the library
+with the credential rules in [Redirects and cookies](#redirects-and-cookies), no
+redirects for the WebSocket handshake (as in browsers and Node's `ws`), and at
+least 64 concurrent requests per host. Interceptors, proxy, DNS, cookie jar,
+`connectionSpecs` and call timeouts are kept. With `followRedirects(false)` on
+your client, polling follows no redirect either.
 
 On Android, set `okHttpClient` and `tlsPolicy` inside `android(context) { }`
 instead. Calling `okHttp { }` after `android(context)` replaces the Android
 client, which removes network binding and traffic tagging.
+
+## Redirects and cookies
+
+A polling request follows redirects like a browser or curl would, also to another
+origin (scheme, host or port), with OkHttp's method rules: 301, 302 and 303 turn a
+POST into a GET without body, 307 and 308 repeat it with its body. After 20
+follow-ups the request fails. On every hop:
+
+- **Scheme.** HTTP→HTTPS is followed; HTTPS→HTTP never, neither from the current
+  hop nor when the first request used HTTPS. The redirect response then fails the
+  request (`"xhr poll error"` with its status).
+- **Authorization.** When the origin changes, `Authorization` and
+  `Proxy-Authorization` are removed, also when they come from `extraHeaders`.
+- **Cookies.** The `Cookie` header is rebuilt for the new URL. With
+  `withCredentials`, the engine's cookie jar contributes the cookies RFC 6265
+  allows there: a cookie without `Domain` goes to the host that set it (any port),
+  a cookie with `Domain=example.com` also to its subdomains, `Path` must match on a
+  `/` boundary, `Secure` cookies go over HTTPS only, and expired cookies are
+  dropped. `Set-Cookie` headers of a redirect response are stored first, so a
+  load balancer that sets a cookie and redirects is answered with it. A `Cookie`
+  entry in `extraHeaders` is sent as written to the host of the server URL, on any
+  scheme or port, and never to another host.
+- **Other headers follow.** Every other `extraHeaders` entry (an `X-Api-Key`, a
+  tenant id) is sent to the redirect target, as browsers, curl and the Swift client
+  do. Send tokens that must stay with your server as `Authorization`.
+- **Client certificates.** With a client certificate configured through
+  `TlsPolicy` (or `withKeyChainAlias` on Android), a redirect to another origin is
+  refused before any connection is made there: the certificate is presented to the
+  origin of the server URL only. A certificate configured directly on your OkHttp
+  client (its own `sslSocketFactory`) is not recognised; use `TlsPolicy`, or turn
+  redirects off with `followRedirects(false)`.
+- **Certificate pins.** With pins configured (`TlsPolicy` or the base client's
+  `CertificatePinner`), a redirect to another host is followed only when a pin
+  covers that host, so pinning is never silently lost. Redirects within a host keep
+  working.
+
+A refused redirect fails the request with `"xhr poll error"`, whose `cause` is a
+`ProtocolException` naming the reason. The WebSocket handshake follows no redirect.
+
+With `withCredentials`, cookies are scoped like in a browser:
+
+| Attribute | Effect |
+| --- | --- |
+| no `Domain` | Host-only: the exact host that set it (lowercase, without trailing dot), any port |
+| `Domain=example.com` (a leading dot is ignored) | `example.com` and its subdomains; rejected unless the setting host is in that domain, rejected for a single label (`Domain=com`) and on an IP address host, where only the address itself is accepted |
+| `Path` | Must match the request path on a `/` boundary of the percent-encoded path (`Path=/a` matches `/a` and `/a/b`, not `/ab` or `/a%2Fb/`); without it, the directory of the request path. On the host and path that set it, a cookie is always sent back, as in JavaScript |
+| `Secure` | Sent over HTTPS/WSS only, and ignored when set over plain HTTP. Loopback hosts (`localhost`, `127.0.0.1`, `::1`) count as secure, as in browsers |
+| `Expires`, `Max-Age` | An expired cookie is no longer sent |
 
 ## TLS
 
