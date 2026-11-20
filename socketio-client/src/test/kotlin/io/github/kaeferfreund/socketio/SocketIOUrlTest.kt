@@ -1,10 +1,13 @@
 package io.github.kaeferfreund.socketio
 
+import io.github.kaeferfreund.socketio.engineio.LogLevel
+import io.github.kaeferfreund.socketio.engineio.SocketLogger
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertNotSame
 import org.junit.jupiter.api.Assertions.assertSame
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 /** Ports of `packages/socket.io-client/test/url.ts` and the manager cache of `index.ts` (`lookup`). */
@@ -174,5 +177,43 @@ class SocketIOUrlTest {
         assertNotSame(s1.manager, forced.manager)
         val unmultiplexed = SocketIO.io("http://localhost:3210/qux", lazyOptions { multiplex = false })
         assertNotSame(s1.manager, unmultiplexed.manager)
+    }
+
+    @Test
+    fun reusingACachedManagerWithOtherOptionsLogsAWarning() {
+        val warnings = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val logger =
+            object : SocketLogger {
+                override fun isLoggable(level: LogLevel) = true
+
+                override fun log(
+                    level: LogLevel,
+                    tag: String,
+                    message: String,
+                    error: Throwable?,
+                ) {
+                    if (level == LogLevel.WARN) warnings += message
+                }
+            }
+        val shared = lazyOptions { this.logger = logger }
+        val first = SocketIO.io("http://localhost:3211/a", shared)
+        val second = SocketIO.io("http://localhost:3211/b", shared)
+        assertSame(first.manager, second.manager)
+        assertEquals(emptyList<String>(), warnings)
+        // Reuse is kept (JavaScript `lookup()`), but options of a later call are not applied: say so.
+        val third = SocketIO.io("http://localhost:3211/c", lazyOptions { this.logger = logger })
+        assertSame(first.manager, third.manager)
+        assertEquals(1, warnings.size, "$warnings")
+        assertTrue("http://localhost:3211" in warnings.single(), warnings.single())
+        first.manager.close()
+    }
+
+    @Test
+    fun aClosedCachedManagerIsReplaced() {
+        val first = SocketIO.io("http://localhost:3212/a", lazyOptions())
+        first.manager.close()
+        val second = SocketIO.io("http://localhost:3212/a", lazyOptions())
+        assertNotSame(first.manager, second.manager)
+        second.manager.close()
     }
 }

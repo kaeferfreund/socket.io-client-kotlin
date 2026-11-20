@@ -41,10 +41,22 @@ val admin = SocketIO.io("https://example.com/admin") // same connection
 ```
 
 A new connection is opened instead when `forceNew = true`, when `multiplex = false`,
-or when the cached manager already has that namespace. A manager closed with
-`close()` leaves the cache; the next lookup creates a new one. `SocketIO.closeAll()`
-closes every cached manager. Explicit managers are the recommended style when an app needs
-control over the connection's lifetime.
+or when the cached manager already has that namespace (also when two threads look up
+the same namespace at once: only one of them gets the cached manager). A manager
+closed with `close()` leaves the cache; the next lookup creates a new one.
+`SocketIO.closeAll()` closes every cached manager. Managers stay cached until they are
+closed, so use `SocketIO.io` with a fixed set of server URLs.
+
+A shared manager keeps the `SocketManagerOptions` of the call that created it. As in
+JavaScript, the options of a later call for the same server — TLS settings, client
+certificates, `extraHeaders`, `query` (also from the URL), limits — are **not applied**
+to the connection that call gets; its `SocketOptions` (`auth`, retries) still apply to
+its namespace. The client logs a warning when a call's options or query are not the
+ones the manager was created with. Pass `forceNew = true`, or create a `SocketManager`
+yourself, for a connection with its own security settings or credentials, and use one
+manager per user when an app talks to the server as more than one user. Explicit
+managers are the recommended style when an app needs control over the connection's
+lifetime.
 
 ## Authentication
 
