@@ -3,12 +3,15 @@ package io.github.kaeferfreund.socketio.okhttp
 import okhttp3.CertificatePinner
 import okhttp3.OkHttpClient
 import java.io.ByteArrayInputStream
+import java.net.InetAddress
+import java.net.Socket
 import java.security.KeyStore
 import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
 import javax.net.ssl.KeyManager
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLSocketFactory
 import javax.net.ssl.TrustManagerFactory
 import javax.net.ssl.X509KeyManager
 import javax.net.ssl.X509TrustManager
@@ -88,7 +91,11 @@ public class TlsPolicy private constructor(
             val trustManager = trustAnchors?.let(::trustManagerFor) ?: current?.x509TrustManager ?: systemTrustManager()
             val context = SSLContext.getInstance("TLS")
             context.init(clientKeyManager?.let { arrayOf<KeyManager>(it) }, arrayOf(trustManager), null)
-            builder.sslSocketFactory(context.socketFactory, trustManager)
+            // The marker tells OkHttpEngineClients that a client certificate is configured, so polling
+            // never follows a redirect to another origin with it. It goes away with the factory, should
+            // a later setting replace it.
+            val factory = if (clientKeyManager != null) ClientCertificateSocketFactory(context.socketFactory) else context.socketFactory
+            builder.sslSocketFactory(factory, trustManager)
         }
         if (pins.isNotEmpty()) {
             val pinner = CertificatePinner.Builder()
@@ -151,4 +158,49 @@ public class TlsPolicy private constructor(
             return factory.trustManagers.filterIsInstance<X509TrustManager>().first()
         }
     }
+}
+
+/**
+ * The socket factory of a client that presents a client certificate: [delegate] unchanged, its
+ * type marks the client for [OkHttpEngineClients].
+ */
+internal class ClientCertificateSocketFactory(
+    private val delegate: SSLSocketFactory,
+) : SSLSocketFactory() {
+    override fun getDefaultCipherSuites(): Array<String> = delegate.defaultCipherSuites
+
+    override fun getSupportedCipherSuites(): Array<String> = delegate.supportedCipherSuites
+
+    override fun createSocket(): Socket = delegate.createSocket()
+
+    override fun createSocket(
+        socket: Socket?,
+        host: String?,
+        port: Int,
+        autoClose: Boolean,
+    ): Socket = delegate.createSocket(socket, host, port, autoClose)
+
+    override fun createSocket(
+        host: String?,
+        port: Int,
+    ): Socket = delegate.createSocket(host, port)
+
+    override fun createSocket(
+        host: String?,
+        port: Int,
+        localHost: InetAddress?,
+        localPort: Int,
+    ): Socket = delegate.createSocket(host, port, localHost, localPort)
+
+    override fun createSocket(
+        host: InetAddress?,
+        port: Int,
+    ): Socket = delegate.createSocket(host, port)
+
+    override fun createSocket(
+        address: InetAddress?,
+        port: Int,
+        localAddress: InetAddress?,
+        localPort: Int,
+    ): Socket = delegate.createSocket(address, port, localAddress, localPort)
 }

@@ -25,7 +25,8 @@ import kotlin.coroutines.resume
  * The certificate is offered whenever a server requests one, regardless of the
  * certificate authorities it lists: a server may accept certificates from
  * authorities it does not advertise, and filtering by that list would break
- * such setups. The manager's connections stay within the origin of its URL.
+ * such setups. The manager's connections stay within the origin of its URL:
+ * while a client certificate is configured, polling refuses redirects to another origin.
  */
 public class KeyChainKeyManager internal constructor(
     context: Context,

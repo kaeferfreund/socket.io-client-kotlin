@@ -272,12 +272,20 @@ class OkHttpEngineClientsTest {
         assertTrue(clients.client.dispatcher.maxRequestsPerHost >= 64)
     }
 
+    /** A client that presents a client certificate (mutual TLS) when a server asks for one. */
+    private fun withClientCertificate(base: OkHttpClient.Builder = OkHttpClient.Builder()): OkHttpClient {
+        val identity = HandshakeCertificates.Builder().heldCertificate(HeldCertificate.Builder().commonName("client").build()).build()
+        return TlsPolicy.systemDefault().withClientCertificate(identity.keyManager).applyTo(base).build()
+    }
+
+    // With a client certificate configured; without one, polling follows redirects to other
+    // origins without credentials (CrossOriginRedirectTest).
     @Test
     fun followsRedirectsOnlyWithinTheOrigin() {
         val other = MockWebServer()
         other.start()
         try {
-            val clients = OkHttpEngineClients()
+            val clients = OkHttpEngineClients(withClientCertificate())
             server.enqueue(MockResponse.Builder().code(307).addHeader("Location", server.url("/socket.io/?moved=1").toString()).build())
             server.enqueue(MockResponse.Builder().body("same origin").build())
             assertEquals("same origin", execute(clients, get()).getOrThrow().body)
@@ -298,8 +306,8 @@ class OkHttpEngineClientsTest {
         }
     }
 
-    // The origin is checked before the redirect is followed: no DNS lookup, TCP connection or TLS
-    // handshake (which could present a client certificate) reaches the other origin.
+    // With a client certificate, the origin is checked before the redirect is followed: no DNS
+    // lookup, TCP connection or TLS handshake (which could present the certificate) reaches the other origin.
     @Test
     fun aRedirectToAnotherOriginOpensNoConnectionToIt() {
         val other = MockWebServer()
@@ -320,7 +328,7 @@ class OkHttpEngineClientsTest {
                         },
                     ).build()
             server.enqueue(MockResponse.Builder().code(302).addHeader("Location", other.url("/collect").toString()).build())
-            assertTrue(execute(OkHttpEngineClients(base), get()).exceptionOrNull() is java.net.ProtocolException)
+            assertTrue(execute(OkHttpEngineClients(withClientCertificate(base.newBuilder())), get()).exceptionOrNull() is java.net.ProtocolException)
             // Distinct ports: where "localhost" resolves to both ::1 and 127.0.0.1, OkHttp
             // tries each address of the first origin, so one origin can count twice.
             assertEquals(setOf(server.port), connected.toSet())
