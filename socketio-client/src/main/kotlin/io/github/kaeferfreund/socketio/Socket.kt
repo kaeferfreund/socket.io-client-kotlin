@@ -340,8 +340,10 @@ public class Socket internal constructor(
             } else {
                 data
             }
-        packet(SocketIOPacket(SocketIOPacketType.CONNECT, namespace, payload), compress = true)
+        // Counted first: sending may close the transport synchronously (a message larger than the
+        // WebSocket client can queue), and the close resets the count for the next connection.
         pendingConnects++
+        packet(SocketIOPacket(SocketIOPacketType.CONNECT, namespace, payload), compress = true)
     }
 
     private fun onerror(error: Throwable) {

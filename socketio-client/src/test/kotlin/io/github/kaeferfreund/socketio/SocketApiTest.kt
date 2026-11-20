@@ -1,7 +1,13 @@
 package io.github.kaeferfreund.socketio
 
+import io.github.kaeferfreund.socketio.engineio.EngineClients
+import io.github.kaeferfreund.socketio.engineio.EngineWebSocketClient
+import io.github.kaeferfreund.socketio.engineio.EngineWebSocketConnection
+import io.github.kaeferfreund.socketio.engineio.EngineWebSocketListener
+import io.github.kaeferfreund.socketio.engineio.EngineWebSocketRequest
 import io.github.kaeferfreund.socketio.engineio.parser.EngineIOData
 import io.github.kaeferfreund.socketio.parser.SocketIOValue
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.test.advanceTimeBy
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -77,6 +83,56 @@ class SocketApiTest {
             assertEquals(2, ids.size, "$ids")
             assertEquals(ids.last(), socket.id)
             assertEquals(2, connects)
+            assertTrue(socket.connected)
+            h.close()
+        }
+
+    // A CONNECT whose send closes the transport synchronously (here a message larger than the
+    // WebSocket client can queue) leaves no pending answer behind: on the next connection, a
+    // CONNECT the socket did not ask for (its auth provider still running) is ignored.
+    @Test
+    fun aConnectWhoseSendClosesTheTransportLeavesNoPendingAnswer() =
+        runClientTest {
+            val h = clientHarness()
+            val limited =
+                object : EngineWebSocketClient {
+                    override fun connect(
+                        request: EngineWebSocketRequest,
+                        listener: EngineWebSocketListener,
+                    ): EngineWebSocketConnection {
+                        val delegate = h.server.clients.webSocket!!.connect(request, listener)
+                        return object : EngineWebSocketConnection by delegate {
+                            override val maxQueuedBytes: Long get() = 1_000
+                        }
+                    }
+                }
+            var calls = 0
+            val pending = CompletableDeferred<Any?>()
+            val provider =
+                AuthProvider {
+                    if (calls++ == 0) mapOf("token" to "x".repeat(2_000)) else pending.await()
+                }
+            val manager =
+                h.manager {
+                    reconnection = false
+                    transports = listOf(Transport.WEBSOCKET)
+                    clients = EngineClients(null, limited)
+                }
+            val errors = ArrayList<Throwable>()
+            val socket = manager.socket(options = SocketOptions { authProvider = provider }) { onConnectError { errors += it } }
+            h.settle()
+            assertFalse(socket.connected)
+            assertEquals(1, calls)
+            socket.connect()
+            h.settle()
+            assertEquals(2, calls)
+            val session = h.server.engine.sessions.values.last { it.isOpen }
+            session.send("0{\"sid\":\"forged\"}")
+            h.settle()
+            assertFalse(socket.connected)
+            assertNull(socket.id)
+            pending.complete(null)
+            h.settle()
             assertTrue(socket.connected)
             h.close()
         }
