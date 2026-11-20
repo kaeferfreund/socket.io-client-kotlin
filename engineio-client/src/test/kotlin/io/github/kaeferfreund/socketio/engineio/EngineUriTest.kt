@@ -2,6 +2,7 @@ package io.github.kaeferfreund.socketio.engineio
 
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -132,6 +133,57 @@ class EngineUriTest {
             assertEquals("example.com", engine.hostname)
             assertEquals("443", engine.port)
         }
+
+    @Test
+    fun aRelativePathCannotChangeTheAuthority() =
+        runTest {
+            for (path in listOf("evil.example/socket.io", "@evil.example/socket.io", ".evil.example/socket.io")) {
+                val url = firstPollingUrl(EngineOptions(path = path))
+                assertEquals("good.example", java.net.URI(url).host, url)
+                assertTrue(url.startsWith("https://good.example/$path/?EIO=4&transport=polling"), url)
+            }
+        }
+
+    @Test
+    fun aRelativeTransportPathCannotChangeTheAuthority() =
+        runTest {
+            val url = firstPollingUrl(EngineOptions(transportOptions = mapOf("polling" to TransportOverrides(path = "@evil.example/x"))))
+            assertEquals("good.example", java.net.URI(url).host, url)
+            assertTrue(url.startsWith("https://good.example/@evil.example/x/?EIO=4"), url)
+        }
+
+    @Test
+    fun absoluteAndEmptyPathsAreUnchanged() =
+        runTest {
+            assertTrue(firstPollingUrl(EngineOptions()).startsWith("https://good.example/engine.io/?EIO=4"))
+            assertTrue(firstPollingUrl(EngineOptions(path = "", addTrailingSlash = false)).startsWith("https://good.example?EIO=4"))
+            assertTrue(firstPollingUrl(EngineOptions(path = "/", addTrailingSlash = true)).startsWith("https://good.example/?EIO=4"))
+        }
+
+    private fun TestScope.firstPollingUrl(options: EngineOptions): String {
+        val requests = ArrayList<String>()
+        val capture =
+            object : EngineHttpClient {
+                override fun execute(
+                    request: EngineHttpRequest,
+                    callback: EngineHttpCallback,
+                ): Cancellable {
+                    requests.add(request.url)
+                    return Cancellable.NONE
+                }
+            }
+        val executor = ProtocolExecutor(StandardTestDispatcher(testScheduler), testScheduler.timeSource)
+        val engine =
+            EngineSocket(
+                "https://good.example",
+                options.copy(transports = listOf("polling"), clients = EngineClients(capture, null)),
+                executor,
+            )
+        executor.execute { engine.open() }
+        testScheduler.runCurrent()
+        executor.shutdown()
+        return requests.single()
+    }
 
     private fun TestScope.newEngine(uri: String): EngineSocket =
         EngineSocket(uri, EngineOptions(), ProtocolExecutor(StandardTestDispatcher(testScheduler), testScheduler.timeSource))

@@ -205,8 +205,11 @@ public abstract class EngineTransport(
             } else {
                 ""
             }
+        // Deliberate deviation from JavaScript: a path without leading slash ("evil.example/x",
+        // "@evil.example/x") would extend or replace the host, so it is made absolute here.
+        val path = if (options.path.isEmpty() || options.path.startsWith('/')) options.path else "/" + options.path
         val encoded = EngineUri.encodeQuery(query)
-        return schema + "://" + host + port + options.path + (if (encoded.isNotEmpty()) "?$encoded" else "")
+        return schema + "://" + host + port + path + (if (encoded.isNotEmpty()) "?$encoded" else "")
     }
 
     /** Header list with the configured extra headers and the cookie jar. */

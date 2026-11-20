@@ -61,7 +61,7 @@ Durations are `Duration` instead of milliseconds.
 | `auth` (function) | `SocketOptions.authProvider` |
 | `retries`, `ackTimeout` | `SocketOptions.retries`, `SocketOptions.ackTimeout` |
 | `hostname`, `secure`, `port`, `host` | Taken from the URL |
-| URL parsing | As `parseuri`, except that brackets count as an IPv6 host only inside the authority: `https://example.com/?ids[]=1` keeps the host `example.com`, where JavaScript takes `xample.co`. The scheme matches case-insensitively and is lowercased, so `HTTPS://example.com` uses TLS; JavaScript takes `HTTPS` as the host name |
+| URL parsing | As `parseuri`, except that brackets count as an IPv6 host only inside the authority: `https://example.com/?ids[]=1` keeps the host `example.com`, where JavaScript takes `xample.co`. The scheme matches case-insensitively and is lowercased, so `HTTPS://example.com` uses TLS; JavaScript takes `HTTPS` as the host name. A `path` without leading slash gets one, so it cannot extend or replace the host |
 | `ca`, `cert`, `key`, `pfx`, `passphrase`, `rejectUnauthorized` | `TlsPolicy` (no "reject unauthorized = false") |
 | `ciphers`, `agent`, `localAddress` | Configure the OkHttp client (`okHttp { }` or `android { okHttpClient = … }`) |
 | `closeOnBeforeunload` | Not applicable; Android: `backgroundPolicy` |
