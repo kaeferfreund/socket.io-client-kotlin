@@ -76,6 +76,20 @@ The API follows the JavaScript client (`emit`, `timeout`, `volatile`, `onAny`,
 `onAnyOutgoing`, `emitWithAck`, `SocketIO.io` lookup); the complete comparison,
 including deliberate differences, is in [PARITY.md](../../PARITY.md).
 
+### Stricter session handling
+
+A JavaScript client trusts the server to follow the protocol. This client checks
+a few things a well-behaved server never does, so behaviour against a real server
+is unchanged:
+
+| Situation | JavaScript client | This client |
+| --- | --- | --- |
+| An acknowledgement for an emit that is still in the send buffer, or a volatile emit that was dropped | Completes the callback | Ignored; the callback waits for the real answer or its timeout |
+| A namespace CONNECT with a session id that answers no CONNECT of this socket (for example while the auth provider is still running) | Connects the namespace | Ignored |
+| `event.ack.send(…)` after the connection that delivered the event closed | Sent on the current connection | Not sent: the new server session numbers its requests from 0 again |
+| Events received before a CONNECT on a connection that then closed | Delivered after the next CONNECT | Dropped |
+| `SocketIO.io` called from several threads for one namespace | Not possible (single-threaded) | Only one caller gets the cached manager; the others get a new connection, as a later call does |
+
 ## Engine.IO connection hardening
 
 The Engine.IO connection follows the JavaScript client, except where a server
