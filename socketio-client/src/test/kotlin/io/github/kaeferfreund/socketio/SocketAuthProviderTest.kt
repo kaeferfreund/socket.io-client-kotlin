@@ -216,4 +216,17 @@ class SocketAuthProviderTest {
             assertEquals(1, sent.count { it.startsWith("2[\"buffered\"") })
             h.close()
         }
+
+    @Test
+    fun aStaticAuthOfTheWrongTypeIsNotQuotedInTheError() =
+        runClientTest {
+            val h = clientHarness()
+            val errors = ArrayList<Throwable>()
+            h.manager().socket(options = SocketOptions { auth = "secret-token" }) { onConnectError { errors += it } }
+            h.settle()
+            val error = errors.single() as AuthProviderException
+            assertTrue("secret-token" !in error.message.orEmpty(), error.message)
+            assertTrue("secret-token" !in error.cause?.message.orEmpty(), error.cause?.message)
+            h.close()
+        }
 }

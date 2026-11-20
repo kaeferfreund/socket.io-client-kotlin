@@ -319,7 +319,8 @@ public class Socket internal constructor(
     private fun sendConnectPacket(auth: Any?) {
         val data: SocketIOValue.Object? =
             try {
-                auth?.let { SocketIOValue.of(it) as? SocketIOValue.Object ?: error("auth must be an object, got $it") }
+                // Only the type: a token passed as a plain string must not end up in connect_error messages and logs.
+                auth?.let { SocketIOValue.of(it) as? SocketIOValue.Object ?: error("auth must be an object, got ${it::class.java.name}") }
             } catch (
                 @Suppress("TooGenericExceptionCaught") e: RuntimeException,
             ) {
