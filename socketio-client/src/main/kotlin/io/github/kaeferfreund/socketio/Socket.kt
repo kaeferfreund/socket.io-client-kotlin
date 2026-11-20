@@ -69,6 +69,9 @@ public class Socket internal constructor(
     /** Whether this socket sent a CONNECT on the current connection that is not answered yet. */
     private var connectSent = false
 
+    /** Counts ended namespace sessions; an acknowledgement belongs to the session it was received in. */
+    private var sessionEpoch = 0L
+
     /** `true` while subscribed to the manager, i.e. connected or trying to (`socket.active`). Executor only. */
     internal val isActive: Boolean get() = subs != null
 
@@ -236,6 +239,7 @@ public class Socket internal constructor(
         subs = null
         activeView = false
         connectSent = false
+        endSession()
         connectGeneration++
         providerJob?.cancel()
         providerJob = null
@@ -315,12 +319,25 @@ public class Socket internal constructor(
         val wasConnected = connectedState
         connectedState = false
         connectSent = false
+        endSession()
         idState = null
         stateFlow.value = ConnectionState.Disconnected(reason, details)
         // JavaScript also emits "disconnect" for a socket that never connected (its
         // CONNECT was still pending); here every disconnect follows a connect.
         if (wasConnected) dispatchLifecycle(SocketEvent.Disconnected(reason, details))
         clearAcks()
+    }
+
+    /**
+     * The namespace session ended: acknowledgements received in it are no longer answered, and
+     * events that arrived before its CONNECT are dropped. JavaScript keeps both, so an answer could
+     * reach the next session — which numbers its own requests from 0 again — and a stale event
+     * could be delivered after the next CONNECT, possibly of another user.
+     */
+    private fun endSession() {
+        sessionEpoch++
+        receiveBuffer.clear()
+        receiveBufferBytes = 0
     }
 
     private fun clearAcks() {
@@ -463,8 +480,9 @@ public class Socket internal constructor(
         }
     }
 
-    private fun ackFor(id: Long): Acknowledgement =
-        object : Acknowledgement {
+    private fun ackFor(id: Long): Acknowledgement {
+        val epoch = sessionEpoch
+        return object : Acknowledgement {
             private val sent = AtomicBoolean(false)
 
             override val isSent: Boolean get() = sent.get()
@@ -472,9 +490,13 @@ public class Socket internal constructor(
             override fun send(vararg args: Any?) {
                 if (!sent.compareAndSet(false, true)) return
                 val data = SocketIOValue.Array(args.map { SocketIOValue.of(it) })
-                executor.execute { packet(SocketIOPacket(SocketIOPacketType.ACK, namespace, data, id), compress = true) }
+                executor.execute {
+                    // Not on a later session (see endSession); JavaScript sends it on whatever connection is current.
+                    if (epoch == sessionEpoch) packet(SocketIOPacket(SocketIOPacketType.ACK, namespace, data, id), compress = true)
+                }
             }
         }
+    }
 
     private fun onack(packet: SocketIOPacket) {
         val id = packet.id ?: return

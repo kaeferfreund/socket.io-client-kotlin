@@ -151,6 +151,30 @@ class SocketAckTest {
         }
 
     @Test
+    fun anAcknowledgementOfAnEarlierConnectionIsNotSentOnTheNextOne() =
+        runClientTest {
+            val answers = ArrayList<List<SocketIOValue>>()
+            val h = clientHarness { namespace("/").onConnection { c -> c.emitWithAck("question") { answers.add(it) } } }
+            val pending = ArrayList<Acknowledgement>()
+            val socket = h.manager { reconnectionDelay = 1.seconds }.socket { on("question") { pending += it.ack!! } }
+            h.settle()
+            h.server.engine.sessions.values
+                .last()
+                .kill()
+            advanceTimeBy(2.seconds)
+            assertTrue(socket.connected)
+            assertEquals(2, pending.size)
+            // The new server session numbers its acknowledgements from 0 again.
+            pending[0].send("stale")
+            h.settle()
+            assertEquals(emptyList<List<SocketIOValue>>(), answers)
+            pending[1].send("fresh")
+            h.settle()
+            assertEquals(listOf(listOf(SocketIOValue.of("fresh"))), answers)
+            h.close()
+        }
+
+    @Test
     fun anUnknownAckIdIsIgnored() =
         runClientTest {
             val h =

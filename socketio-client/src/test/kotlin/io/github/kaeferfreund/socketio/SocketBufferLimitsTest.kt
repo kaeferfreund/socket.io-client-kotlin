@@ -1,5 +1,6 @@
 package io.github.kaeferfreund.socketio
 
+import io.github.kaeferfreund.socketio.engineio.parser.EngineIOData
 import io.github.kaeferfreund.socketio.parser.SocketIOPacket
 import io.github.kaeferfreund.socketio.parser.SocketIOPacketType
 import io.github.kaeferfreund.socketio.parser.SocketIOValue
@@ -143,6 +144,34 @@ class SocketBufferLimitsTest {
             // JavaScript: buffered events are emitted before "connect", with `connected` already true.
             assertEquals(listOf("early:connected", "connect"), order)
             SocketIOPacket(SocketIOPacketType.EVENT, "/", SocketIOValue.arrayOf("x")).hashCode()
+        }
+
+    @Test
+    fun eventsBufferedOnAClosedConnectionAreNotDeliveredOnTheNextOne() =
+        runClientTest {
+            var connections = 0
+            val h =
+                clientHarness {
+                    engine.onConnection = { session ->
+                        val n = ++connections
+                        session.onMessage = { data ->
+                            if ((data as EngineIOData.Text).value.startsWith("0")) {
+                                // The first connection only sends an event and never answers the CONNECT.
+                                if (n == 1) session.send("2[\"stale\"]") else session.send("0{\"sid\":\"s$n\"}")
+                            }
+                        }
+                    }
+                }
+            val received = ArrayList<String>()
+            val socket = h.manager { reconnectionDelay = 1.seconds }.socket { onAny { name, _ -> received += name } }
+            h.settle()
+            assertEquals(listOf("stale"), socket.receiveBufferSnapshot().map { it.name })
+            h.server.engine.sessions.values
+                .last()
+                .kill()
+            advanceTimeBy(2.seconds)
+            assertTrue(socket.connected)
+            assertEquals(emptyList<String>(), received)
         }
 
     @Test
