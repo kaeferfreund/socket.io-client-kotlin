@@ -95,7 +95,9 @@ Notes:
   sessions), set an OkHttp `CookieJar` with `okHttp { configure { cookieJar(…) } }`.
   The application's `CookieManager` is never used implicitly. A cookie whose name
   or value is not printable ASCII is ignored: it could not be sent back in a
-  request header.
+  request header. The jar keeps browser limits (180 cookies, 4096 bytes each) and
+  honours `Path` between transports with different paths; see
+  [Compatibility](Compatibility.md#engineio-connection-hardening).
 - `extraHeaders` holds one value per name. Join repeated values with `", "`.
   Header names and values must be ASCII; a request with a value OkHttp refuses
   (or a malformed URL) fails with a transport error (`"xhr poll error"`,
@@ -103,7 +105,9 @@ Notes:
 - **Compression:** OkHttp negotiates `permessage-deflate` and compresses messages
   by size only (`perMessageDeflateThreshold`). The per-message flag of
   `socket.compress(false)` is carried to the transport, but OkHttp offers no way to
-  switch compression off for a single frame.
+  switch compression off for a single frame. With `perMessageDeflateThreshold = null`
+  the extension is not offered, and a server that enables it anyway fails the
+  handshake (`"websocket error"`).
 - **Large WebSocket messages:** OkHttp queues at most 16 MiB of outgoing WebSocket
   data. The transport hands it only what fits and waits for the rest, so bursts of
   large emits do not close the connection; a single message above 16 MiB cannot be
@@ -186,7 +190,8 @@ val options = SocketManagerOptions {
 The library derives its own client from yours: read timeout disabled,
 HTTPS→HTTP redirects not followed (`followSslRedirects = false`), polling redirects
 followed only within the same origin (scheme, host and port) so extra headers,
-cookies and request bodies never reach another host, no redirects for the
+cookies, request bodies and a client certificate never reach another host (the
+origin is checked before any connection to the new location), no redirects for the
 WebSocket handshake (as in browsers and Node's `ws`), and at least 64 concurrent
 requests per host. Interceptors, proxy, DNS, cookie jar,
 `connectionSpecs` and call timeouts are kept.
@@ -211,6 +216,12 @@ client, which removes network binding and traffic tagging.
 
 Host patterns follow OkHttp's `CertificatePinner`: `api.example.com`,
 `*.example.com` (one label) or `**.example.com` (any depth).
+
+A policy is applied on top of the base client (`client` in `okHttp { }`,
+`okHttpClient` on Android) and never removes its restrictions. Without
+`customTrust`, the base client's trust manager stays in charge, also when a client
+certificate is added. Pins are added to the base client's `CertificatePinner`;
+as in OkHttp, a host matched by several patterns accepts any of their pins.
 
 ```kotlin
 import io.github.kaeferfreund.socketio.okhttp.TlsPolicy
@@ -314,10 +325,16 @@ exist for apps that process untrusted or unusually large input.
 | `reviver` | `null` (`JSON.parse` reviver) |
 
 A packet over a parser limit closes the connection with `"parse error"`; the
-manager reconnects. On WebSocket, OkHttp reads each incoming message completely
-before the client sees it and has no size limit of its own, so these limits bound
-what is processed, not that buffer. For a server you do not trust, prefer polling
-with `maxPollingResponseBytes`, which is enforced while reading.
+manager reconnects. On WebSocket, OkHttp reads each incoming message completely,
+and inflates it when `permessage-deflate` was negotiated (the default), before the
+client sees it. OkHttp has no size limit for this buffer and offers no hook to set
+one, and a compressed message can grow to about a thousand times the bytes sent.
+The parser limits therefore bound what is processed, not that buffer, and
+`maxPollingResponseBytes` does not apply to WebSocket. For a server you do not
+trust, use polling only (`transports = listOf(Transport.POLLING)`) with
+`maxPollingResponseBytes`, which is enforced while reading. Where WebSocket is
+needed, `perMessageDeflateThreshold = null` at least keeps compression off, so a
+message takes no more memory than the server actually sends.
 
 `SocketBufferLimits` (`bufferLimits`) bounds what is kept across packets:
 `maxSendBufferPackets`/`Bytes`, `maxRetryQueuePackets`/`Bytes`,
@@ -339,4 +356,72 @@ val options = SocketManagerOptions {
 }
 ```
 
-Byte counts of the buffers are estimates of retained memory, not wire sizes.
+Byte counts of the buffers are estimates of retained memory, not wire sizes. In the
+receive buffer, every event and every argument counts a few bytes even when it is empty.
+
+## Hardening for untrusted servers
+
+The defaults above stay unlimited for parity with JavaScript. An app that
+connects to servers it does not control (a public or user-supplied URL, or a
+backend whose compromise must not take the app down with it) should set the
+limits explicitly. The values below are a starting point for chat-sized
+messages; size them from the largest payload your protocol really sends.
+
+```kotlin
+import io.github.kaeferfreund.socketio.SocketBufferLimits
+import io.github.kaeferfreund.socketio.SocketManager
+import io.github.kaeferfreund.socketio.SocketManagerOptions
+import io.github.kaeferfreund.socketio.SocketOptions
+import io.github.kaeferfreund.socketio.engineio.HandshakeLimits
+import io.github.kaeferfreund.socketio.parser.SocketParserOptions
+import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.seconds
+
+val hardened = SocketManagerOptions {
+    // One incoming packet.
+    parserOptions = SocketParserOptions(
+        maxAttachments = 10,
+        maxTextPacketBytes = 1L shl 20, // 1 MiB of header plus JSON
+        maxBinaryPacketBytes = 8L shl 20, // 8 MiB of attachments
+        maxNestingDepth = 64,
+    )
+    // What is kept across packets.
+    bufferLimits = SocketBufferLimits(
+        maxSendBufferPackets = 500,
+        maxSendBufferBytes = 4L shl 20,
+        maxRetryQueuePackets = 500,
+        maxRetryQueueBytes = 4L shl 20,
+        maxReceiveBufferPackets = 100,
+        maxReceiveBufferBytes = 1L shl 20,
+        binaryReconstructionTimeout = 30.seconds,
+    )
+    // Engine.IO: one polling response and the handshake timers.
+    maxPollingResponseBytes = 16L shl 20
+    requestTimeout = 30.seconds
+    handshakeLimits = HandshakeLimits(maxPingInterval = 2.minutes, maxPingTimeout = 2.minutes)
+    // Listener exceptions go to your own reporting instead of the log.
+    listenerErrorHandler = { error -> reportToCrashTool(error) }
+}
+val manager = SocketManager("https://example.com", hardened)
+val socket = manager.socket("/", SocketOptions { ackTimeout = 30.seconds })
+```
+
+- One polling response can batch several packets, and binary attachments travel
+  base64-encoded (a third larger), so keep `maxPollingResponseBytes` above
+  `maxTextPacketBytes` and about 4/3 of `maxBinaryPacketBytes`.
+- `handshakeLimits` must stay above the server's `pingInterval` and
+  `pingTimeout` (Socket.IO defaults: 25 and 20 seconds), or every connection
+  fails with `"invalid handshake"`. Without a bound, a server can announce timers
+  so large that a dead connection is never detected.
+- `ackTimeout` (per socket, or per emit with `timeout(…)`) bounds how long
+  acknowledgement callbacks wait for a server that never answers.
+- On WebSocket the parser limits bound what the client processes, not the
+  message OkHttp reads first; see [Limits](#limits). Where that matters, restrict
+  `transports` to `Transport.POLLING`.
+- Without `listenerErrorHandler`, a listener exception goes to `logger`; if the
+  logger does not log errors (`SocketLogger.NONE`, the JVM default), the
+  exception and its stack trace are printed to standard error. Set a handler
+  when exception messages may contain user data.
+
+A limit that triggers closes the connection with the error described in
+[Limits](#limits), and the manager reconnects with its usual backoff.

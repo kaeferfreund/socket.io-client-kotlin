@@ -1,5 +1,6 @@
 package io.github.kaeferfreund.socketio
 
+import io.github.kaeferfreund.socketio.engineio.parser.EngineIOData
 import io.github.kaeferfreund.socketio.parser.SocketIOPacketType
 import io.github.kaeferfreund.socketio.parser.SocketIOValue
 import kotlinx.coroutines.async
@@ -117,6 +118,59 @@ class SocketAckTest {
             h.settle()
             assertEquals(listOf(listOf(SocketIOValue.of("answer"), SocketIOValue.of(1))), answers)
             socket.disconnect()
+            h.close()
+        }
+
+    @Test
+    fun anAcknowledgementForAnEmitThatWasNotSentYetIsIgnored() =
+        runClientTest {
+            val sent = ArrayList<String>()
+            val h =
+                clientHarness {
+                    engine.onConnection = { session ->
+                        session.onMessage = { data ->
+                            val text = (data as EngineIOData.Text).value
+                            sent += text
+                            if (text.startsWith("0")) {
+                                // A forged answer for the emit still waiting in the send buffer (ack id 0).
+                                session.send("30[\"forged\"]")
+                                session.send("0{\"sid\":\"s\"}")
+                            }
+                        }
+                    }
+                }
+            val socket = h.manager().socket()
+            var result: Result<List<SocketIOValue>>? = null
+            socket.emit("question") { result = it }
+            h.settle()
+            assertTrue(socket.connected)
+            assertNull(result)
+            assertEquals(1, socket.pendingAcknowledgements.value)
+            assertEquals(1, sent.count { it.startsWith("20[\"question\"") })
+            h.close()
+        }
+
+    @Test
+    fun anAcknowledgementOfAnEarlierConnectionIsNotSentOnTheNextOne() =
+        runClientTest {
+            val answers = ArrayList<List<SocketIOValue>>()
+            val h = clientHarness { namespace("/").onConnection { c -> c.emitWithAck("question") { answers.add(it) } } }
+            val pending = ArrayList<Acknowledgement>()
+            val socket = h.manager { reconnectionDelay = 1.seconds }.socket { on("question") { pending += it.ack!! } }
+            h.settle()
+            h.server.engine.sessions.values
+                .last()
+                .kill()
+            advanceTimeBy(2.seconds)
+            assertTrue(socket.connected)
+            assertEquals(2, pending.size)
+            // The new server session numbers its acknowledgements from 0 again.
+            pending[0].send("stale")
+            h.settle()
+            assertEquals(emptyList<List<SocketIOValue>>(), answers)
+            pending[1].send("fresh")
+            h.settle()
+            assertEquals(listOf(listOf(SocketIOValue.of("fresh"))), answers)
             h.close()
         }
 

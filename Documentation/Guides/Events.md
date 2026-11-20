@@ -129,7 +129,7 @@ has a different type:
 | `obj` | `Map<String, SocketIOValue>?` |
 | `array` | `List<SocketIOValue>?` |
 | `isNull`, `containsBinary` | `Boolean` |
-| `toKotlin()` | Plain `null`/`Boolean`/`Long`/`Double`/`String`/`ByteArray`/`List`/`Map` |
+| `toKotlin()` | Plain `null`/`Boolean`/`Long`/`Double`/`String`/`ByteArray`/`List`/`Map`; an attachment referenced several times is one shared `ByteArray` |
 
 `SocketIOValue.Object` and `SocketIOValue.Array` also support `value["key"]` and
 `value[index]`. Numbers follow JavaScript: an integral value is stored as a `Long`,
@@ -259,7 +259,11 @@ val decoded: ChatMessage? = someEvent[0]?.decodeAs<ChatMessage>()
 `onSerializable` decodes the first argument; a payload that does not decode is
 passed to its `onError` parameter (by default rethrown to the manager's
 `listenerErrorHandler`). `serializableAck<T> { result -> }` builds an
-`AckCallback` that decodes the first acknowledgement argument. All functions take
+`AckCallback` that decodes the first acknowledgement argument. Every decoding
+function (`decodeAs`, `emitSerializableWithAck`, `serializableAck`,
+`onSerializable`) reports a payload nested too deeply for a recursive class to
+decode as a `SerializationException` caused by the `StackOverflowError` that
+kotlinx.serialization hit, like any other payload that does not decode. All functions take
 an optional `Json` instance; the default ignores unknown keys. Binary data has no
 JSON form: send `ByteArray` payloads as separate arguments.
 

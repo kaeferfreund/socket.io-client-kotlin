@@ -3,6 +3,8 @@ package io.github.kaeferfreund.socketio.engineio
 import io.github.kaeferfreund.socketio.engineio.parser.EngineIOPacket
 import io.github.kaeferfreund.socketio.engineio.parser.EngineIOPacketType
 import io.github.kaeferfreund.socketio.engineio.parser.EngineIOParser
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * HTTP long-polling, a port of `Polling` and `BaseXHR`/`Request` in
@@ -11,8 +13,9 @@ import io.github.kaeferfreund.socketio.engineio.parser.EngineIOParser
  * One GET is outstanding at a time; POSTs never overlap because the engine
  * only writes while the transport is [writable]. Differences from JavaScript,
  * all toward robustness: a response that arrives after the transport closed
- * is ignored, the outstanding GET is cancelled on close (the close POST is
- * still sent), and a response body may be bounded by
+ * is ignored, the outstanding GET and POSTs are cancelled on close (the close
+ * POST is still sent, with [TransportOptions.requestTimeout] or at most
+ * 10 seconds), and a response body may be bounded by
  * [TransportOptions.maxPollingResponseBytes].
  */
 public class PollingTransport(
@@ -28,6 +31,13 @@ public class PollingTransport(
     private var polling = false
     private var pollRequest: Cancellable? = null
 
+    /** POSTs still waiting for their response; cancelled when the transport closes. */
+    private val pendingWrites = LinkedHashSet<PendingWrite>()
+
+    private class PendingWrite {
+        var request: Cancellable = Cancellable.NONE
+    }
+
     /** Generation of the current open cycle; stale callbacks compare against it. */
     private var closedGeneration = 0
 
@@ -35,9 +45,13 @@ public class PollingTransport(
         poll()
     }
 
+    /** Listeners of a pause that waits for the pending poll or write. */
+    private val pauseWaits = ArrayList<Cancellable>()
+
     override fun pause(onPause: () -> Unit) {
         readyState = TransportState.PAUSING
         val pause = {
+            pauseWaits.clear()
             readyState = TransportState.PAUSED
             onPause()
         }
@@ -45,19 +59,32 @@ public class PollingTransport(
             var total = 0
             if (polling) {
                 total++
-                events.once<TransportEvent.PollComplete, TransportEvent> {
-                    if (--total == 0) pause()
-                }
+                pauseWaits +=
+                    events.once<TransportEvent.PollComplete, TransportEvent> {
+                        if (--total == 0) pause()
+                    }
             }
             if (!writable) {
                 total++
-                events.once<TransportEvent.Drain, TransportEvent> {
-                    if (--total == 0) pause()
-                }
+                pauseWaits +=
+                    events.once<TransportEvent.Drain, TransportEvent> {
+                        if (--total == 0) pause()
+                    }
             }
         } else {
             pause()
         }
+    }
+
+    // JavaScript cannot undo a pause: after a failed upgrade probe it stays paused and stops
+    // polling, so the connection stalls until the heartbeat deadline.
+    override fun resume() {
+        if (readyState != TransportState.PAUSING && readyState != TransportState.PAUSED) return
+        pauseWaits.forEach(Cancellable::cancel)
+        pauseWaits.clear()
+        readyState = TransportState.OPEN
+        // A poll still in flight polls again when it completes; a write in flight drains as usual.
+        if (!polling) poll()
     }
 
     private fun poll() {
@@ -68,15 +95,15 @@ public class PollingTransport(
 
     /** Handles one polling response body (`onData` in JavaScript). */
     private fun onPayload(data: String) {
-        for (packet in EngineIOParser.decodePayload(data)) {
-            if (readyState == TransportState.OPENING && packet.type == EngineIOPacketType.OPEN) onOpen()
-            if (packet.type == EngineIOPacketType.CLOSE) {
-                onClose(CloseDetails("transport closed by the server"))
-                // JavaScript's forEach ignores the callback's `return false`
-                // and hands later packets to listeners that no longer exist.
-                continue
-            }
-            onPacket(packet)
+        // EngineIOParser.decodePayload, one packet at a time: a body of many tiny packets is
+        // never expanded into packet objects all at once (JavaScript decodes the whole list).
+        var start = 0
+        while (true) {
+            val end = data.indexOf(EngineIOParser.SEPARATOR, start).let { if (it < 0) data.length else it }
+            val packet = EngineIOParser.decodePacket(data.substring(start, end))
+            onPayloadPacket(packet)
+            if (packet.type == EngineIOPacketType.ERROR || end == data.length) break
+            start = end + 1
         }
         if (readyState != TransportState.CLOSED) {
             polling = false
@@ -85,8 +112,19 @@ public class PollingTransport(
         }
     }
 
+    private fun onPayloadPacket(packet: EngineIOPacket) {
+        if (readyState == TransportState.OPENING && packet.type == EngineIOPacketType.OPEN) onOpen()
+        if (packet.type == EngineIOPacketType.CLOSE) {
+            onClose(CloseDetails("transport closed by the server"))
+            // JavaScript's forEach ignores the callback's `return false`
+            // and hands later packets to listeners that no longer exist.
+            return
+        }
+        onPacket(packet)
+    }
+
     override fun doClose() {
-        val close = { write(listOf(EngineIOPacket(EngineIOPacketType.CLOSE))) }
+        val close = { writeClosePacket() }
         if (readyState == TransportState.OPEN) {
             close()
         } else {
@@ -97,8 +135,16 @@ public class PollingTransport(
 
     override fun onClose(details: CloseDetails?) {
         closedGeneration++
+        // A pause still waiting for its poll or write never completes on a closed transport.
+        pauseWaits.forEach(Cancellable::cancel)
+        pauseWaits.clear()
         pollRequest?.cancel()
         pollRequest = null
+        // JavaScript lets pending writes run on; a server that never answers them would
+        // keep requests of a closed connection open.
+        val writes = pendingWrites.toList()
+        pendingWrites.clear()
+        writes.forEach { it.request.cancel() }
         super.onClose(details)
     }
 
@@ -121,7 +167,7 @@ public class PollingTransport(
     private fun doPoll() {
         val generation = closedGeneration
         pollRequest =
-            request("GET", null) { result ->
+            request("GET", null, options.requestTimeout) { result ->
                 if (generation != closedGeneration) return@request
                 pollRequest = null
                 result.fold(
@@ -135,10 +181,36 @@ public class PollingTransport(
         body: String,
         onSuccess: () -> Unit,
     ) {
-        // A POST outlives a close on purpose: it may carry the close packet.
-        request("POST", body) { result ->
+        val generation = closedGeneration
+        val pending = PendingWrite()
+        pendingWrites += pending
+        pending.request =
+            request("POST", body, options.requestTimeout) { result ->
+                // Like a poll, a write of a closed transport is cancelled and its outcome ignored:
+                // neither a drain nor the cancellation's error reaches the engine.
+                if (generation != closedGeneration) return@request
+                pendingWrites -= pending
+                result.fold(
+                    onSuccess = { onSuccess() },
+                    onFailure = { reportFailure("xhr post error", it) },
+                )
+            }
+    }
+
+    /**
+     * Sends the close packet. Its POST outlives the transport on purpose, so the
+     * server learns about the close, but not indefinitely: without a configured
+     * [TransportOptions.requestTimeout] it is bounded by [CLOSE_REQUEST_TIMEOUT].
+     */
+    private fun writeClosePacket() {
+        writable = false
+        val body = EngineIOParser.encodePayload(listOf(EngineIOPacket(EngineIOPacketType.CLOSE)))
+        request("POST", body, options.requestTimeout ?: CLOSE_REQUEST_TIMEOUT) { result ->
             result.fold(
-                onSuccess = { onSuccess() },
+                onSuccess = {
+                    writable = true
+                    events.emit(TransportEvent.Drain)
+                },
                 onFailure = { reportFailure("xhr post error", it) },
             )
         }
@@ -163,6 +235,7 @@ public class PollingTransport(
     private fun request(
         method: String,
         body: String?,
+        timeout: Duration?,
         onResult: (Result<String>) -> Unit,
     ): Cancellable {
         val headers = requestHeaders()
@@ -174,7 +247,7 @@ public class PollingTransport(
                 url = uri(),
                 headers = headers,
                 body = body,
-                timeout = options.requestTimeout,
+                timeout = timeout,
                 maxResponseBytes = options.maxPollingResponseBytes,
             )
         val jar = options.cookieJar
@@ -182,7 +255,7 @@ public class PollingTransport(
             object : EngineHttpCallback {
                 override fun onResponse(response: EngineHttpResponse) {
                     executor.execute {
-                        jar?.parseCookies(response.headerValues("set-cookie"))
+                        jar?.parseCookies(response.headerValues("set-cookie"), requestPath)
                         // 1223 is IE's mangled 204; kept for fidelity with the JavaScript check.
                         if (response.status == 200 || response.status == 1223) {
                             onResult(Result.success(response.body))
@@ -210,6 +283,9 @@ public class PollingTransport(
 
     public companion object {
         public const val NAME: String = "polling"
+
+        /** Longest wait for the response to the close packet when no request timeout is configured. */
+        private val CLOSE_REQUEST_TIMEOUT = 10.seconds
 
         /** Factory for [EngineOptions.transportFactories]. */
         public val FACTORY: Factory = Factory { PollingTransport(it) }

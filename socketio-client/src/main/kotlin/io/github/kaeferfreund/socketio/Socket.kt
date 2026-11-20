@@ -66,6 +66,15 @@ public class Socket internal constructor(
     private var connectGeneration = 0
     private var providerJob: Job? = null
 
+    /**
+     * CONNECTs this socket queued on the current connection that are not answered yet. Usually
+     * one; more when connect() runs again before the answer (as in JavaScript, each is answered).
+     */
+    private var pendingConnects = 0
+
+    /** Counts ended namespace sessions; an acknowledgement belongs to the session it was received in. */
+    private var sessionEpoch = 0L
+
     /** `true` while subscribed to the manager, i.e. connected or trying to (`socket.active`). Executor only. */
     internal val isActive: Boolean get() = subs != null
 
@@ -94,7 +103,10 @@ public class Socket internal constructor(
         val withError: Boolean,
         val callback: (Throwable?, List<SocketIOValue>) -> Unit,
         var timer: Cancellable? = null,
-    )
+    ) {
+        /** Whether its packet went to the transport; only then can an answer be genuine. */
+        var sent = false
+    }
 
     // ---- Listeners (thread-safe, not protocol state). -------------------------------------------
 
@@ -183,14 +195,50 @@ public class Socket internal constructor(
     /**
      * Forgets the connection-state-recovery session (`pid` and offset), so the
      * next CONNECT starts a fresh session — for example after the signed-in
-     * user changed. Has no effect on the current connection.
+     * user changed.
+     *
+     * Everything the previous session left waiting is dropped too, so none of
+     * it reaches the next one: emits in the send buffer and the retry queue
+     * (including a retry waiting for its acknowledgement) and events received
+     * before a CONNECT. Their acknowledgements fail with
+     * [SocketDisconnectedException], as on [SocketManager.close]. Emits made
+     * after this call are kept. The current connection stays up, and
+     * acknowledgements of other emits it already sent are still answered.
      */
     public fun clearRecoveryState(): Socket {
         executor.execute {
             pid = null
             lastOffset = null
+            dropPending()
         }
         return this
+    }
+
+    /** Drops what is waiting to be sent or delivered; see [clearRecoveryState]. */
+    private fun dropPending() {
+        val error = SocketDisconnectedException()
+        receiveBuffer.clear()
+        receiveBufferBytes = 0
+        val queued = ArrayList(queue)
+        for (packet in queued) packet.callback = { _, _ -> }
+        queue.clear()
+        queueBytes = 0
+        val inFlight = ArrayList(inFlightAckIds.values)
+        inFlightAckIds.clear()
+        val buffered = ArrayList(sendBuffer)
+        sendBuffer.clear()
+        sendBufferBytes = 0
+        val dropped = ArrayList<AckEntry>()
+        for (id in buffered.mapNotNull { it.packet.id } + inFlight) {
+            val entry = acks.remove(id) ?: continue
+            entry.timer?.cancel()
+            dropped.add(entry)
+        }
+        updatePending()
+        for (item in buffered) intercept { it.onDropped(item.event, error) }
+        // A retry's own entry only forwards to its (now silenced) queue callback; the queued ack is failed below.
+        for (entry in dropped) if (entry.withError) entry.callback(error, emptyList())
+        for (packet in queued) packet.ack?.invoke(error, emptyList())
     }
 
     internal fun connectOnExecutor() {
@@ -229,6 +277,8 @@ public class Socket internal constructor(
         subs?.forEach(Cancellable::cancel)
         subs = null
         activeView = false
+        pendingConnects = 0
+        endSession()
         connectGeneration++
         providerJob?.cancel()
         providerJob = null
@@ -272,7 +322,8 @@ public class Socket internal constructor(
     private fun sendConnectPacket(auth: Any?) {
         val data: SocketIOValue.Object? =
             try {
-                auth?.let { SocketIOValue.of(it) as? SocketIOValue.Object ?: error("auth must be an object, got $it") }
+                // Only the type: a token passed as a plain string must not end up in connect_error messages and logs.
+                auth?.let { SocketIOValue.of(it) as? SocketIOValue.Object ?: error("auth must be an object, got ${it::class.java.name}") }
             } catch (
                 @Suppress("TooGenericExceptionCaught") e: RuntimeException,
             ) {
@@ -289,6 +340,9 @@ public class Socket internal constructor(
             } else {
                 data
             }
+        // Counted first: sending may close the transport synchronously (a message larger than the
+        // WebSocket client can queue), and the close resets the count for the next connection.
+        pendingConnects++
         packet(SocketIOPacket(SocketIOPacketType.CONNECT, namespace, payload), compress = true)
     }
 
@@ -306,12 +360,26 @@ public class Socket internal constructor(
     ) {
         val wasConnected = connectedState
         connectedState = false
+        pendingConnects = 0
+        endSession()
         idState = null
         stateFlow.value = ConnectionState.Disconnected(reason, details)
         // JavaScript also emits "disconnect" for a socket that never connected (its
         // CONNECT was still pending); here every disconnect follows a connect.
         if (wasConnected) dispatchLifecycle(SocketEvent.Disconnected(reason, details))
         clearAcks()
+    }
+
+    /**
+     * The namespace session ended: acknowledgements received in it are no longer answered, and
+     * events that arrived before its CONNECT are dropped. JavaScript keeps both, so an answer could
+     * reach the next session — which numbers its own requests from 0 again — and a stale event
+     * could be delivered after the next CONNECT, possibly of another user.
+     */
+    private fun endSession() {
+        sessionEpoch++
+        receiveBuffer.clear()
+        receiveBufferBytes = 0
     }
 
     private fun clearAcks() {
@@ -359,6 +427,13 @@ public class Socket internal constructor(
         if (packet.nsp != namespace) return
         when (packet.type) {
             SocketIOPacketType.CONNECT -> {
+                // JavaScript accepts any CONNECT. Here only the answer to the CONNECT this socket
+                // sent on this connection counts: a peer must not connect the namespace (and
+                // release the send buffer) while the auth provider is still running or after it
+                // failed, nor connect it more often than it asked. An empty (v2.x) CONNECT is such
+                // an answer too.
+                if (pendingConnects == 0) return ignoreUnrequested("CONNECT")
+                pendingConnects--
                 val data = packet.data as? SocketIOValue.Object
                 val sid = data?.get("sid")?.string
                 if (sid != null && sid.isNotEmpty()) {
@@ -380,6 +455,10 @@ public class Socket internal constructor(
             SocketIOPacketType.DISCONNECT -> ondisconnect()
 
             SocketIOPacketType.CONNECT_ERROR -> {
+                // A server sends CONNECT_ERROR only to refuse a CONNECT. JavaScript accepts it at any
+                // time; on a connected socket it destroys the socket but leaves it marked as connected,
+                // so connect() does nothing any more and acknowledgements never fail.
+                if (pendingConnects == 0) return ignoreUnrequested("CONNECT_ERROR")
                 destroy()
                 val data = packet.data
                 val error =
@@ -395,6 +474,11 @@ public class Socket internal constructor(
         }
     }
 
+    private fun ignoreUnrequested(type: String) {
+        val logger = manager.options.logger
+        if (logger.isLoggable(LogLevel.DEBUG)) logger.log(LogLevel.DEBUG, "socket", "ignored an unrequested $type for $namespace")
+    }
+
     private fun onevent(packet: SocketIOPacket) {
         val items = (packet.data as? SocketIOValue.Array)?.items ?: return
         val first = items.firstOrNull() ?: return
@@ -405,7 +489,8 @@ public class Socket internal constructor(
             emitEvent(event)
         } else {
             val limits = manager.options.bufferLimits
-            val bytes = estimateBytes(items)
+            // Every retained event and argument costs memory, even when empty.
+            val bytes = RETAINED_EVENT_BYTES + estimateBytes(items, slotBytes = RETAINED_SLOT_BYTES)
             if (receiveBuffer.size + 1 > limits.maxReceiveBufferPackets || receiveBufferBytes + bytes > limits.maxReceiveBufferBytes) {
                 val error =
                     if (receiveBuffer.size + 1 > limits.maxReceiveBufferPackets) {
@@ -445,8 +530,9 @@ public class Socket internal constructor(
         }
     }
 
-    private fun ackFor(id: Long): Acknowledgement =
-        object : Acknowledgement {
+    private fun ackFor(id: Long): Acknowledgement {
+        val epoch = sessionEpoch
+        return object : Acknowledgement {
             private val sent = AtomicBoolean(false)
 
             override val isSent: Boolean get() = sent.get()
@@ -454,13 +540,21 @@ public class Socket internal constructor(
             override fun send(vararg args: Any?) {
                 if (!sent.compareAndSet(false, true)) return
                 val data = SocketIOValue.Array(args.map { SocketIOValue.of(it) })
-                executor.execute { packet(SocketIOPacket(SocketIOPacketType.ACK, namespace, data, id), compress = true) }
+                executor.execute {
+                    // Not on a later session (see endSession); JavaScript sends it on whatever connection is current.
+                    if (epoch == sessionEpoch) packet(SocketIOPacket(SocketIOPacketType.ACK, namespace, data, id), compress = true)
+                }
             }
         }
+    }
 
     private fun onack(packet: SocketIOPacket) {
         val id = packet.id ?: return
-        val entry = acks.remove(id) ?: return
+        // JavaScript accepts an answer for any registered id. An emit still in the send buffer, or
+        // a volatile one that was dropped, never reached the server, so its "answer" is forged:
+        // ignore it, and keep the callback for the real answer or the timeout.
+        val entry = acks[id]?.takeIf { it.sent } ?: return
+        acks.remove(id)
         entry.timer?.cancel()
         updatePending()
         val args = (packet.data as? SocketIOValue.Array)?.items ?: emptyList()
@@ -492,6 +586,7 @@ public class Socket internal constructor(
         updatePending()
         for (item in buffered) {
             notifyOutgoingListeners(item.event)
+            item.packet.id?.let { acks[it]?.sent = true }
             packet(item.packet, item.compress)
             intercept { it.onSent(item.event) }
         }
@@ -623,6 +718,7 @@ public class Socket internal constructor(
 
             isConnected -> {
                 notifyOutgoingListeners(outgoing)
+                id?.let { acks[it]?.sent = true }
                 packet(packet, flags.compress)
                 intercept { it.onSent(outgoing) }
             }
@@ -978,15 +1074,25 @@ public class Socket internal constructor(
     override fun toString(): String = "Socket(namespace=$namespace, state=${stateFlow.value})"
 
     internal companion object {
-        fun estimateBytes(values: List<SocketIOValue>): Long {
+        /** Fixed cost of one event in the receive buffer. */
+        private const val RETAINED_EVENT_BYTES = 16L
+
+        /** Fixed cost of one text or binary argument in the receive buffer; other values cost 8 bytes already. */
+        private const val RETAINED_SLOT_BYTES = 8L
+
+        /** Estimated retained bytes of [values]; [slotBytes] is added for every text and binary value. */
+        fun estimateBytes(
+            values: List<SocketIOValue>,
+            slotBytes: Long = 0,
+        ): Long {
             var total = 0L
             val stack = ArrayDeque(values)
             while (stack.isNotEmpty()) {
                 total +=
                     when (val value = stack.removeLast()) {
-                        is SocketIOValue.Text -> value.value.length.toLong() * 2
+                        is SocketIOValue.Text -> slotBytes + value.value.length.toLong() * 2
 
-                        is SocketIOValue.Binary -> value.size.toLong()
+                        is SocketIOValue.Binary -> slotBytes + value.size.toLong()
 
                         is SocketIOValue.Array -> {
                             stack.addAll(value.items)

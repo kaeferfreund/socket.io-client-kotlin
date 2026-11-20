@@ -142,17 +142,37 @@ public abstract class EngineTransport(
 
     protected val executor: ProtocolExecutor get() = options.executor
 
+    /**
+     * The path this transport requests, which also scopes its cookies.
+     * Deliberate deviation from JavaScript: a path without leading slash ("evil.example/x",
+     * "@evil.example/x") would extend or replace the host, so it is made absolute here.
+     */
+    internal val requestPath: String =
+        if (options.path.isEmpty() || options.path.startsWith('/')) options.path else "/" + options.path
+
     /** Starts connecting. */
     public fun open() {
         readyState = TransportState.OPENING
         doOpen()
     }
 
-    /** Closes the transport if it is opening or open. */
+    /**
+     * Closes the transport if it is opening or open. A transport that is
+     * pausing for an upgrade is only marked closed, so it releases what it
+     * still has pending.
+     */
     public fun close() {
-        if (readyState == TransportState.OPENING || readyState == TransportState.OPEN) {
-            doClose()
-            onClose(null)
+        when (readyState) {
+            TransportState.OPENING, TransportState.OPEN -> {
+                doClose()
+                onClose(null)
+            }
+
+            // JavaScript ignores close() here, which leaves the poll a pausing transport waits
+            // for running after the engine closed in the middle of an upgrade.
+            TransportState.PAUSING -> onClose(null)
+
+            else -> Unit
         }
     }
 
@@ -163,6 +183,12 @@ public abstract class EngineTransport(
 
     /** Pauses the transport before an upgrade; only polling needs to. */
     public open fun pause(onPause: () -> Unit) {}
+
+    /**
+     * Undoes a [pause] that has not called back yet, when the upgrade it was for
+     * failed: `onPause` is never called and the transport works as before.
+     */
+    internal open fun resume() {}
 
     protected fun onError(
         reason: String,
@@ -206,13 +232,13 @@ public abstract class EngineTransport(
                 ""
             }
         val encoded = EngineUri.encodeQuery(query)
-        return schema + "://" + host + port + options.path + (if (encoded.isNotEmpty()) "?$encoded" else "")
+        return schema + "://" + host + port + requestPath + (if (encoded.isNotEmpty()) "?$encoded" else "")
     }
 
     /** Header list with the configured extra headers and the cookie jar. */
     protected fun requestHeaders(): MutableList<Pair<String, String>> {
         val headers = options.extraHeaders.entries.mapTo(ArrayList()) { it.key to it.value }
-        options.cookieJar?.cookieHeader()?.let { headers.add("cookie" to it) }
+        options.cookieJar?.cookieHeader(requestPath)?.let { headers.add("cookie" to it) }
         return headers
     }
 

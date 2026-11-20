@@ -85,15 +85,15 @@ class NetworkBindingTest {
 
     @Test
     fun aFailedBoundLookupFallsBackToTheSystemResolver() {
-        val system = Dns { host -> listOf(InetAddress.getByAddress(host, byteArrayOf(100, 64, 0, 7))) }
+        val system = Dns { host -> listOf(InetAddress.getByAddress(host, byteArrayOf(192.toByte(), 0, 2, 7))) }
         val binding =
             NetworkBinding(null, systemDns = system) { _: Network, host: String ->
                 throw UnknownHostException("Unable to resolve host \"$host\": No address associated with hostname")
             }
         binding.network = ShadowNetwork.newInstance(109)
         assertEquals(
-            listOf(InetAddress.getByAddress("remote-arm.tail31b4a1.ts.net", byteArrayOf(100, 64, 0, 7))),
-            binding.dns.lookup("remote-arm.tail31b4a1.ts.net"),
+            listOf(InetAddress.getByAddress("remote-device.example.test", byteArrayOf(192.toByte(), 0, 2, 7))),
+            binding.dns.lookup("remote-device.example.test"),
         )
     }
 

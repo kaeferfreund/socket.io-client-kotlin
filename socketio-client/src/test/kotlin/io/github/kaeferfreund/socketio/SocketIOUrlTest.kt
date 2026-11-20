@@ -1,10 +1,13 @@
 package io.github.kaeferfreund.socketio
 
+import io.github.kaeferfreund.socketio.engineio.LogLevel
+import io.github.kaeferfreund.socketio.engineio.SocketLogger
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertNotSame
 import org.junit.jupiter.api.Assertions.assertSame
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 /** Ports of `packages/socket.io-client/test/url.ts` and the manager cache of `index.ts` (`lookup`). */
@@ -103,6 +106,58 @@ class SocketIOUrlTest {
         assertEquals("443", SocketIO.url("example.com").port)
     }
 
+    @Test
+    fun bracketsInTheQueryKeepTheHost() {
+        val parsed = SocketIO.url("https://chat.example.com/?ids[]=1")
+        assertEquals("chat.example.com", parsed.host)
+        assertEquals("443", parsed.port)
+        assertEquals("https://chat.example.com:443", parsed.id)
+        assertEquals("ids[]=1", parsed.query)
+    }
+
+    @Test
+    fun mixedCaseSchemesAreRecognised() {
+        val parsed = SocketIO.url("HTTPS://example.com/chat")
+        assertEquals("https", parsed.protocol)
+        assertEquals("example.com", parsed.host)
+        assertEquals("443", parsed.port)
+        assertEquals("/chat", parsed.path)
+        assertEquals("https://example.com:443", parsed.id)
+        assertEquals("https://example.com/chat", parsed.source)
+        assertEquals("ws", SocketIO.url("Ws://example.com", location = SocketIO.BaseLocation("https:", "woot.com")).protocol)
+    }
+
+    @Test
+    fun theHostIsTheOneAWhatwgParserSees() {
+        assertEquals("https://good.example:443", SocketIO.url("https://good.example\\@evil.example/").id)
+        assertEquals("https://good.example:443", SocketIO.url("https://evil.example:x:y@good.example/").id)
+    }
+
+    @Test
+    fun slashesAndBackslashesAfterTheSchemeAreSkippedAsInWhatwgUrls() {
+        for (uri in listOf("http:///good.example/chat", "http:/good.example/chat", "http:good.example/chat", "HTTP:\\\\good.example/chat")) {
+            val parsed = SocketIO.url(uri)
+            assertEquals("http", parsed.protocol, uri)
+            assertEquals("good.example", parsed.host, uri)
+            assertEquals("80", parsed.port, uri)
+            assertEquals("/chat", parsed.path, uri)
+            assertEquals("http://good.example:80", parsed.id, uri)
+            assertEquals("http://good.example/chat", parsed.source, uri)
+        }
+        assertEquals("wss://good.example:443", SocketIO.url("wss://\\good.example").id)
+        assertEquals("https://good.example:443", SocketIO.url("http:pass@good.example").id)
+        assertEquals("https://http:8080", SocketIO.url("http:8080").id)
+        for (uri in listOf(
+            "http:\\\\user@good.example",
+            "http:\\\\good.example\\@evil.example/",
+            "http:good.example?a=@b",
+            "http:good.example#a@b",
+            "http:\\good.example?token=a@b",
+        )) {
+            assertEquals("http://good.example:80", SocketIO.url(uri).id, uri)
+        }
+    }
+
     private fun lazyOptions(block: SocketManagerOptions.Builder.() -> Unit = {}) =
         SocketManagerOptions {
             autoConnect = false
@@ -147,5 +202,77 @@ class SocketIOUrlTest {
         assertNotSame(s1.manager, forced.manager)
         val unmultiplexed = SocketIO.io("http://localhost:3210/qux", lazyOptions { multiplex = false })
         assertNotSame(s1.manager, unmultiplexed.manager)
+    }
+
+    @Test
+    fun reusingACachedManagerWithOtherOptionsLogsAWarning() {
+        val warnings = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val logger =
+            object : SocketLogger {
+                override fun isLoggable(level: LogLevel) = true
+
+                override fun log(
+                    level: LogLevel,
+                    tag: String,
+                    message: String,
+                    error: Throwable?,
+                ) {
+                    if (level == LogLevel.WARN) warnings += message
+                }
+            }
+        val shared = lazyOptions { this.logger = logger }
+        val first = SocketIO.io("http://localhost:3211/a", shared)
+        val second = SocketIO.io("http://localhost:3211/b", shared)
+        assertSame(first.manager, second.manager)
+        assertEquals(emptyList<String>(), warnings)
+        // Reuse is kept (JavaScript `lookup()`), but options of a later call are not applied: say so.
+        val third = SocketIO.io("http://localhost:3211/c", lazyOptions { this.logger = logger })
+        assertSame(first.manager, third.manager)
+        assertEquals(1, warnings.size, "$warnings")
+        assertTrue("http://localhost:3211" in warnings.single(), warnings.single())
+        first.manager.close()
+    }
+
+    // A later call that passes neither options nor a query has nothing that could be ignored.
+    @Test
+    fun reusingACachedManagerWithoutOptionsOrQueryLogsNoWarning() {
+        val warnings = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val logger =
+            object : SocketLogger {
+                override fun isLoggable(level: LogLevel) = true
+
+                override fun log(
+                    level: LogLevel,
+                    tag: String,
+                    message: String,
+                    error: Throwable?,
+                ) {
+                    if (level == LogLevel.WARN) warnings += message
+                }
+            }
+        // The creator's query came from its URL; the later call has none.
+        val first = SocketIO.io("http://localhost:3213/?token=a", lazyOptions { this.logger = logger })
+        val second = SocketIO.io("http://localhost:3213/admin")
+        assertSame(first.manager, second.manager)
+        // The creator passed its own options; the later call none.
+        val third = SocketIO.io("http://localhost:3214/", lazyOptions { this.logger = logger })
+        val fourth = SocketIO.io("http://localhost:3214/admin")
+        assertSame(third.manager, fourth.manager)
+        assertEquals(emptyList<String>(), warnings)
+        // A query of the later call that the cached manager does not have is still reported.
+        val fifth = SocketIO.io("http://localhost:3214/other?token=b")
+        assertSame(third.manager, fifth.manager)
+        assertEquals(1, warnings.size, "$warnings")
+        first.manager.close()
+        third.manager.close()
+    }
+
+    @Test
+    fun aClosedCachedManagerIsReplaced() {
+        val first = SocketIO.io("http://localhost:3212/a", lazyOptions())
+        first.manager.close()
+        val second = SocketIO.io("http://localhost:3212/a", lazyOptions())
+        assertNotSame(first.manager, second.manager)
+        second.manager.close()
     }
 }

@@ -18,8 +18,8 @@ Urteil (52 davon mit HTTP 503 des Gateways) und wurden automatisch wiederholt;
 kein Batch blieb ohne Urteil. Dazu kommen die Gemini-Läufe des Koordinators, die hier nicht abgerechnet
 sind. Alle Wahrscheinlichkeiten sind Modellschätzungen, keine Beweise.
 
-Rohdaten, Skripte und Ereignisprotokolle liegen außerhalb des Repositories in
-`/home/monkey/code/socketio-kotlin-upstream-triage/`. Die Jev-Urteile sind als
+Rohdaten, Skripte und Ereignisprotokolle sind außerhalb des Repositories
+archiviert und nicht veröffentlicht. Die Jev-Urteile sind als
 [Stufe-1-CSV](ReviewEvidence/JavaUpstreamTriage-Stage1-2026-09-25.csv) und
 [Stufe-2-CSV](ReviewEvidence/JavaUpstreamTriage-Stage2-2026-09-25.csv) beigelegt.
 

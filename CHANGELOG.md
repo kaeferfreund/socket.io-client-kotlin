@@ -6,6 +6,134 @@ All notable changes to this project are documented here. The format follows
 
 ## Unreleased
 
+## 17.1.0 — 2026-11-20
+
+A security release. A review of the whole repository found ways in which a
+hostile or compromised server, or a malformed URL, could redirect traffic to
+another host, keep connections and memory alive without bound, mix data between
+sessions or users, or leak credentials into logs. This version fixes them.
+
+The public API is unchanged: every `api/*.api` signature is the same as in
+17.0.1. Defaults are unchanged too: every resource limit stays off unless you set
+it, as in the JavaScript client. Against a well-behaved Socket.IO server, almost
+everything behaves as before. **Three changes can affect a correct app** and are
+listed first, each with its own issue for questions and feedback. Every
+deliberate difference from the JavaScript client is described in the
+[compatibility guide](Documentation/Guides/Compatibility.md).
+
+### Behaviour changes to check before upgrading
+
+- **`clearRecoveryState()` also drops pending emits**
+  ([#16](https://github.com/kaeferfreund/socket.io-client-kotlin/issues/16)).
+  - **What it drops:** emits waiting in the send buffer (made while
+    disconnected), the retry queue and events received before a CONNECT. Their
+    acknowledgements fail with `SocketDisconnectedException`.
+  - **Why:** the user-switch recipe in the connections guide relies on this
+    method, and without it emits made by the previous user while offline were
+    sent under the next user's session.
+  - **Who is affected:** apps that call it for another reason, such as a fresh
+    session for the same user. They lose emits buffered while offline; re-emit
+    them after the call if they must be delivered.
+- **Closing engines end after at most 10 seconds**
+  ([#17](https://github.com/kaeferfreund/socket.io-client-kotlin/issues/17)).
+  - **What changed:** every Engine.IO connection the manager closes or replaces
+    is closed hard if it has not finished closing after 10 seconds. This covers
+    `disconnect()`, `pause()`, connect timeouts and reconnects. Before, only
+    `close()` had this limit.
+  - **Why:** a server could otherwise keep a closed connection polling forever.
+  - **Who is affected:** on the polling transport over a slow uplink, a large
+    emit sent right before `disconnect()` is cancelled after 10 seconds. Wait for
+    its acknowledgement before disconnecting, or use WebSocket.
+- **Cookies follow the `Path` rules across transports**
+  ([#18](https://github.com/kaeferfreund/socket.io-client-kotlin/issues/18)).
+  - **What changed:** with `withCredentials = true`, a cookie without `Path`
+    applies only to the path that set it, as in a browser.
+  - **Who is affected:** only setups where polling and WebSocket use different
+    paths (`TransportOverrides.path`). A sticky-session cookie without `Path` set
+    on the polling path is no longer sent with the WebSocket handshake. Have the
+    server set `Path=/`, or use one path for both transports.
+
+Smaller differences that only a server breaking the protocol, or unusual
+configurations, will notice:
+
+- **Unsolicited packets are ignored.** This covers acknowledgements for emits
+  that were not sent yet, and a namespace CONNECT or CONNECT_ERROR that answers
+  no CONNECT of the socket. An acknowledgement that arrives after its connection
+  closed is not sent on the next one.
+- **Cookie jar limits** (with `withCredentials`), as in browsers: at most 180
+  cookies, the oldest makes room, and at most 4096 bytes of name and value per
+  cookie.
+- **Shared binary arrays.** An attachment referenced several times in one
+  packet is converted to one shared `ByteArray`, as JavaScript shares one
+  Buffer.
+- **TLS pins are combined.** `TlsPolicy` keeps the trust manager and the pins
+  of a supplied OkHttp client instead of replacing them. A host pinned both
+  there and in the policy accepts either set of pins, as OkHttp combines pins.
+- **Multiplexing warning.** `SocketIO.io()` logs a warning when it returns a
+  cached manager although the call passed other options or another query.
+- **Fatal errors propagate.** `serializableAck` no longer turns VM errors such
+  as `OutOfMemoryError` into a failed `Result`.
+- **Unoffered WebSocket extensions.** A WebSocket handshake that enables an
+  extension the client did not offer fails, as RFC 6455 requires.
+
+### Security
+
+- **URL parsing.** The parser now finds the same host as OkHttp's `HttpUrl`.
+  - Brackets count as an IPv6 host only in the host part, so
+    `https://chat.example.com/?ids[]=1` no longer connects to `hat.example.co`.
+  - The scheme is matched regardless of case, so `HTTPS://host` no longer
+    connects without TLS to a host named `HTTPS`.
+  - A relative transport `path` can no longer change the host.
+  - Hosts written with `\`, extra slashes, several `@` or `:` in the user info,
+    or an `@` after `\`, `?` or `#` resolve to the same host as in `HttpUrl`.
+- **Engine.IO.**
+  - Duplicate upgrade offers and repeated handshakes no longer start extra
+    probe connections.
+  - A handshake that arrives after `close()` no longer reopens the engine.
+  - A failed upgrade probe no longer stalls polling or blocks `close()`.
+  - Closing engines no longer extend their heartbeat and cancel pending
+    requests; see [#17](https://github.com/kaeferfreund/socket.io-client-kotlin/issues/17)
+    for the time limit.
+  - At most one unsent pong is buffered.
+  - Polling packets are handled as they are decoded.
+  - Cookies: an already expired cookie never evicts a live one, and `Path`
+    attributes are recognised after a `;` without a space.
+- **Socket.IO.**
+  - The user-switch recipe no longer leaks emits to the next user
+    ([#16](https://github.com/kaeferfreund/socket.io-client-kotlin/issues/16)).
+  - An unrequested CONNECT_ERROR used to leave a connected socket marked as
+    connected, so `connect()` did nothing any more. It is now ignored.
+  - Empty events count against the receive-buffer byte limit.
+  - Concurrent `SocketIO.io()` calls no longer share one namespace socket
+    between callers.
+- **Parser and serialization.**
+  - A repeated attachment is copied once per conversion instead of once per
+    reference.
+  - Rejected binary input is not copied before the byte-limit check.
+  - A payload nested too deeply to decode is reported as a
+    `SerializationException` from every decoder, not as a `StackOverflowError`.
+- **OkHttp and TLS.**
+  - Cross-origin polling redirects are refused before any connection to the
+    other origin.
+  - A refused WebSocket handshake releases its pooled connection.
+- **Credentials.** Query values, user info, fragments, cookie values, rejected
+  header and subprotocol values and invalid auth values no longer appear in
+  `toString()` output or error messages.
+
+### Documentation
+
+- A [hardening recipe](Documentation/Guides/Configuration.md#hardening-for-untrusted-servers)
+  for apps that talk to servers they do not control, with every limit option.
+- A precise description of what bounds incoming WebSocket messages, how
+  `SocketIO.io()` multiplexing treats options, and the user-switch recipe.
+- New sections "Stricter session handling" and "Engine.IO connection hardening"
+  in the compatibility guide.
+
+### Build
+
+- Release jobs no longer restore the CI Gradle cache or use the build cache, and
+  pass workflow values to scripts through the environment.
+
 ### Testing
 
 - `socketio-testing`: `FixtureServer.close()` also stops the processes the
@@ -13,6 +141,8 @@ All notable changes to this project are documented here. The format follows
   the server runs as the shim's child and a signal to the shim alone left it
   running until the test JVM exited. The same applies when a fixture fails to
   start and when `npm ci` times out.
+- `socketio-testing`: the fixture watchdog script is created readable and
+  writable by its owner only.
 
 ## 17.0.1 — 2026-09-26
 

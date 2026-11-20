@@ -46,13 +46,21 @@ public class ResponseTooLargeException(
  *   = false`), so a redirect cannot downgrade the connection, over any hop;
  * - a polling request follows a redirect only within its origin (scheme, host
  *   and port): OkHttp would otherwise send the extra headers, cookies and a
- *   POST body on to another host. The WebSocket handshake follows no redirect,
- *   like browsers and Node's `ws`;
+ *   POST body on to another host. The origin is checked before the redirect is
+ *   followed, so no connection (and no TLS handshake presenting a client
+ *   certificate) is made to another origin. The WebSocket handshake follows no
+ *   redirect, like browsers and Node's `ws`;
  * - at least 64 concurrent requests per host, so several managers polling
  *   the same server cannot starve each other's POSTs.
  *
  * Configure TLS, proxies, cookies, DNS or the socket factory on [client]
  * (see [TlsPolicy] and the Android module).
+ *
+ * OkHttp reads (and, with permessage-deflate, inflates) each incoming WebSocket
+ * message completely before [EngineWebSocketListener.onMessage] runs and has no
+ * limit for it; [EngineHttpRequest.maxResponseBytes] bounds polling responses only.
+ * Without compression ([EngineWebSocketRequest.compressionThreshold] `null`) the
+ * extension is not offered, and a handshake response that enables it anyway fails.
  */
 public class OkHttpEngineClients(
     client: OkHttpClient = defaultClient,
@@ -63,7 +71,7 @@ public class OkHttpEngineClients(
             .newBuilder()
             .readTimeout(0, TimeUnit.MILLISECONDS)
             .followSslRedirects(false)
-            .addNetworkInterceptor(SameOriginRedirects)
+            .addNetworkInterceptor(SameOriginHops)
             .dispatcher(
                 client.dispatcher.takeIf { it.maxRequestsPerHost >= 64 }
                     ?: Dispatcher(client.dispatcher.executorService).apply {
@@ -71,6 +79,17 @@ public class OkHttpEngineClients(
                         maxRequestsPerHost = 64
                     },
             ).build()
+
+    /**
+     * The client for polling requests: OkHttp's redirect following is replaced by
+     * [SameOriginRedirects], which checks a redirect's origin before connecting to it.
+     */
+    private val pollingClient: OkHttpClient =
+        this.client
+            .newBuilder()
+            .followRedirects(false)
+            .addInterceptor(SameOriginRedirects(followRedirects = this.client.followRedirects))
+            .build()
 
     /** Both halves as [EngineClients]. */
     public val clients: EngineClients get() = EngineClients(this, this)
@@ -83,7 +102,7 @@ public class OkHttpEngineClients(
             try {
                 val url = request.url.toHttpUrl()
                 val builder = Request.Builder().url(url).tag(Origin::class.java, Origin.of(url))
-                for ((name, value) in request.headers) builder.addHeader(name, value)
+                for ((name, value) in request.headers) addHeader(builder, name, value)
                 if (request.method == "POST") {
                     builder.post((request.body ?: "").toRequestBody(TEXT_PLAIN))
                 } else {
@@ -93,10 +112,10 @@ public class OkHttpEngineClients(
             } catch (e: IllegalArgumentException) {
                 // A URL or header value OkHttp rejects (for example a non-ASCII character) fails
                 // this request like a network error, on another thread as the contract requires.
-                failLater { callback.onFailure(IOException("invalid request: ${e.message}", e)) }
+                failLater { callback.onFailure(invalidRequest(e, request.url)) }
                 return Cancellable.NONE
             }
-        val call = client.newCall(okRequest)
+        val call = pollingClient.newCall(okRequest)
         request.timeout?.let { call.timeout().timeout(it.inWholeMilliseconds, TimeUnit.MILLISECONDS) }
         call.enqueue(
             object : Callback {
@@ -146,10 +165,10 @@ public class OkHttpEngineClients(
         val builder = Request.Builder()
         try {
             builder.url(request.url)
-            for ((name, value) in request.headers) builder.addHeader(name, value)
-            if (request.protocols.isNotEmpty()) builder.header("Sec-WebSocket-Protocol", request.protocols.joinToString(", "))
+            for ((name, value) in request.headers) addHeader(builder, name, value)
+            if (request.protocols.isNotEmpty()) addHeader(builder, "Sec-WebSocket-Protocol", request.protocols.joinToString(", "), replace = true)
         } catch (e: IllegalArgumentException) {
-            failLater { listener.onFailure(IOException("invalid request: ${e.message}", e), null) }
+            failLater { listener.onFailure(invalidRequest(e, request.url), null) }
             return ClosedConnection
         }
         val wsBuilder = client.newBuilder().followRedirects(false)
@@ -160,9 +179,7 @@ public class OkHttpEngineClients(
             // perMessageDeflate disabled: do not even offer the extension. OkHttp skips network
             // interceptors for WebSocket upgrades, so an application interceptor removes the header.
             wsBuilder.minWebSocketMessageToCompress(Long.MAX_VALUE)
-            wsBuilder.addInterceptor { chain ->
-                chain.proceed(chain.request().newBuilder().removeHeader("Sec-WebSocket-Extensions").build())
-            }
+            wsBuilder.addInterceptor(NoWebSocketExtensions)
         }
         val wsClient = wsBuilder.build()
         val socket =
@@ -207,12 +224,75 @@ public class OkHttpEngineClients(
                         response: Response?,
                     ) {
                         response?.close()
-                        listener.onFailure(t, response?.code)
+                        if (NoWebSocketExtensions.refused(response)) {
+                            listener.onFailure(NoWebSocketExtensions.failure(), null)
+                        } else {
+                            listener.onFailure(t, response?.code)
+                        }
                     }
                 },
             )
         return OkHttpWebSocketConnection(socket)
     }
+
+    /**
+     * Adds a header, or sets it when [replace]; OkHttp's error for a rejected value
+     * names the header but not the value.
+     */
+    private fun addHeader(
+        builder: Request.Builder,
+        name: String,
+        value: String,
+        replace: Boolean = false,
+    ) {
+        try {
+            if (replace) builder.header(name, value) else builder.addHeader(name, value)
+        } catch (e: IllegalArgumentException) {
+            throw redacted(e, value)
+        }
+    }
+
+    /**
+     * The failure for a request OkHttp cannot build. Applications log connection errors, so
+     * neither the message nor its cause carries the URL's query or fragment (`sid`, tokens).
+     */
+    private fun invalidRequest(
+        e: IllegalArgumentException,
+        url: String,
+    ): IOException {
+        val secrets = listOf(url.substringAfter('?', "").substringBefore('#'), url.substringAfter('#', ""))
+        val cause =
+            redacted(e) { message ->
+                // For a URL without a scheme OkHttp quotes its truncated start ("… no scheme was
+                // found for ?toke..."), which may be the query and matches no secret in full.
+                val quote = message.indexOf(NO_SCHEME_QUOTE)
+                val text = if (quote < 0) message else message.substring(0, quote + NO_SCHEME_QUOTE.length) + REDACTED
+                redact(text, secrets)
+            }
+        return IOException("invalid request: ${cause.message}", cause)
+    }
+
+    /** [e] itself, or a copy with the same stack trace whose message has [secrets] replaced. */
+    private fun redacted(
+        e: IllegalArgumentException,
+        vararg secrets: String,
+    ): IllegalArgumentException = redacted(e) { redact(it, secrets.asList()) }
+
+    /** [e] itself, or a copy with the same stack trace whose message is [clean]ed. */
+    private fun redacted(
+        e: IllegalArgumentException,
+        clean: (String) -> String,
+    ): IllegalArgumentException {
+        val message = e.message ?: return e
+        val cleaned = clean(message)
+        if (cleaned == message) return e
+        return IllegalArgumentException(cleaned).also { it.stackTrace = e.stackTrace }
+    }
+
+    private fun redact(
+        text: String,
+        secrets: List<String>,
+    ): String = secrets.filter { it.isNotEmpty() }.fold(text) { result, secret -> result.replace(secret, REDACTED) }
 
     /** Scheme, host and port of the URL a request was made for. */
     private class Origin private constructor(
@@ -227,16 +307,104 @@ public class OkHttpEngineClients(
         }
     }
 
-    /** Fails a redirect to another origin; network interceptors see every hop of a call. */
-    private object SameOriginRedirects : Interceptor {
+    /**
+     * Fails a redirect to another origin; network interceptors see every hop of a call. A
+     * second line of defence behind [SameOriginRedirects], also for calls made on [client].
+     */
+    private object SameOriginHops : Interceptor {
         override fun intercept(chain: Interceptor.Chain): Response {
             val request = chain.request()
             val origin = request.tag(Origin::class.java)
-            if (origin != null && !origin.matches(request.url)) {
-                throw ProtocolException("redirect to another origin refused: ${request.url.redact()}")
-            }
+            if (origin != null && !origin.matches(request.url)) throw crossOrigin(request.url)
             return chain.proceed(request)
         }
+    }
+
+    /**
+     * Follows the redirects of a polling request as OkHttp does (a 307/308 repeats the method
+     * and body, other codes continue with a GET; at most [MAX_FOLLOW_UPS]) but only within the
+     * request's origin. Checked here, before the follow-up is sent, a redirect to another origin
+     * causes no DNS lookup, connection or TLS handshake there.
+     */
+    private class SameOriginRedirects(
+        private val followRedirects: Boolean,
+    ) : Interceptor {
+        override fun intercept(chain: Interceptor.Chain): Response {
+            val origin = chain.request().tag(Origin::class.java)
+            var response = chain.proceed(chain.request())
+            if (origin == null || !followRedirects) return response
+            var followUps = 0
+            while (true) {
+                val next = followUp(response) ?: return response
+                response.close()
+                if (!origin.matches(next.url)) throw crossOrigin(next.url)
+                if (++followUps > MAX_FOLLOW_UPS) throw ProtocolException("Too many follow-up requests: $followUps")
+                response = chain.proceed(next)
+            }
+        }
+
+        /** OkHttp's `RetryAndFollowUpInterceptor.buildRedirectRequest` with `followSslRedirects = false`. */
+        private fun followUp(response: Response): Request? {
+            if (response.code !in REDIRECT_CODES) return null
+            val location = response.header("Location") ?: return null
+            val request = response.request
+            val url = request.url.resolve(location) ?: return null
+            // followSslRedirects = false: a redirect between HTTP and HTTPS is returned, not followed.
+            if (url.scheme != request.url.scheme) return null
+            val builder = request.newBuilder().url(url)
+            if (request.method != "GET" && request.method != "HEAD") {
+                if (response.code == HTTP_TEMP_REDIRECT || response.code == HTTP_PERM_REDIRECT) {
+                    builder.method(request.method, request.body)
+                } else {
+                    builder.method("GET", null).removeHeader("Transfer-Encoding").removeHeader("Content-Length").removeHeader("Content-Type")
+                }
+            }
+            return builder.build()
+        }
+
+        private companion object {
+            const val HTTP_TEMP_REDIRECT = 307
+            const val HTTP_PERM_REDIRECT = 308
+
+            /** `RetryAndFollowUpInterceptor.MAX_FOLLOW_UPS`. */
+            const val MAX_FOLLOW_UPS = 20
+            val REDIRECT_CODES = setOf(300, 301, 302, 303, HTTP_TEMP_REDIRECT, HTTP_PERM_REDIRECT)
+        }
+    }
+
+    /**
+     * Offers no WebSocket extension and fails a handshake whose response accepts one anyway
+     * (RFC 6455, section 4.1): OkHttp would otherwise inflate permessage-deflate messages the
+     * client never asked for.
+     */
+    private object NoWebSocketExtensions : Interceptor {
+        override fun intercept(chain: Interceptor.Chain): Response {
+            val response = chain.proceed(chain.request().newBuilder().removeHeader(EXTENSIONS).build())
+            if (response.code != HTTP_SWITCHING_PROTOCOLS || response.headers(EXTENSIONS).none { it.isNotBlank() }) return response
+            // Turn the upgrade into a failed one: OkHttp then fails the WebSocket itself and
+            // releases the upgraded connection, which is neither used nor returned to the pool.
+            // Throwing here instead would leave the connection allocated.
+            return response
+                .newBuilder()
+                .request(response.request.newBuilder().tag(Refused::class.java, Refused).build())
+                .code(HTTP_UPGRADE_REQUIRED)
+                .message(MESSAGE)
+                .build()
+        }
+
+        /** Whether [response] is a handshake this interceptor refused. */
+        fun refused(response: Response?): Boolean = response?.request?.tag(Refused::class.java) != null
+
+        /** The failure reported for a refused handshake, without OkHttp's synthetic status. */
+        fun failure(): ProtocolException = ProtocolException(MESSAGE)
+
+        /** Tags the request of a refused handshake; a server cannot forge it. */
+        private object Refused
+
+        private const val MESSAGE = "the server accepted a WebSocket extension that was not offered"
+        private const val EXTENSIONS = "Sec-WebSocket-Extensions"
+        private const val HTTP_SWITCHING_PROTOCOLS = 101
+        private const val HTTP_UPGRADE_REQUIRED = 426
     }
 
     /** Runs [report] on OkHttp's dispatcher threads, never inside the caller's stack. */
@@ -306,6 +474,13 @@ public class OkHttpEngineClients(
 
     public companion object {
         private val TEXT_PLAIN = "text/plain;charset=UTF-8".toMediaType()
+
+        private const val REDACTED = "<redacted>"
+
+        /** Precedes the quoted start of a URL without a scheme in OkHttp's message. */
+        private const val NO_SCHEME_QUOTE = "no scheme was found for "
+
+        private fun crossOrigin(url: HttpUrl) = ProtocolException("redirect to another origin refused: ${url.redact()}")
 
         /** `RealWebSocket.MAX_QUEUE_SIZE`: OkHttp's limit for queued outgoing WebSocket bytes. */
         private const val OKHTTP_MAX_QUEUE_BYTES = 16L * 1024 * 1024

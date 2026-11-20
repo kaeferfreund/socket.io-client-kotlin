@@ -201,7 +201,14 @@ public sealed class SocketIOValue {
     /** `true` when this value or anything inside it is [Binary]. */
     public val containsBinary: Boolean get() = hasBinary(this)
 
-    /** This value converted to plain Kotlin types, see [toKotlin]. */
+    /**
+     * This value converted to plain Kotlin types: `null`, `Boolean`,
+     * `Long`/`Double`, `String`, `ByteArray`, `List<Any?>` and
+     * `Map<String, Any?>`. Binary data is copied, once per [Binary] instance:
+     * where the same instance occurs several times (a received attachment
+     * referenced by several placeholders), every occurrence is the same
+     * `ByteArray`, as JavaScript hands out the same `Buffer`.
+     */
     public fun toKotlin(): Any? = toKotlinValue(this)
 
     public companion object {
@@ -341,15 +348,23 @@ internal fun hasBinary(value: SocketIOValue): Boolean {
 /**
  * Converts to plain Kotlin: `null`, `Boolean`, `Long`/`Double`, `String`,
  * `ByteArray`, `List<Any?>` and `Map<String, Any?>` (insertion-ordered).
+ *
+ * Each [SocketIOValue.Binary] instance is copied once per conversion; every
+ * further occurrence of the same instance gets that same array. The decoder
+ * resolves all placeholders naming one attachment to one instance, so a peer
+ * cannot multiply an attachment by repeating its placeholder, and the result
+ * shares the array the way JavaScript shares the one `Buffer`.
  */
 private fun toKotlinValue(root: SocketIOValue): Any? {
+    val copies = IdentityHashMap<SocketIOValue.Binary, ByteArray>()
+
     fun leaf(value: SocketIOValue): Any? =
         when (value) {
             is SocketIOValue.Null -> null
             is SocketIOValue.Bool -> value.value
             is SocketIOValue.Number -> value.value
             is SocketIOValue.Text -> value.value
-            is SocketIOValue.Binary -> value.bytes
+            is SocketIOValue.Binary -> copies.getOrPut(value) { value.bytes }
             is SocketIOValue.Array -> ArrayList<Any?>(value.size)
             is SocketIOValue.Object -> LinkedHashMap<String, Any?>(value.size)
         }

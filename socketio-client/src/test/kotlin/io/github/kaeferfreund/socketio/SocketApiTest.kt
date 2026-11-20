@@ -1,7 +1,13 @@
 package io.github.kaeferfreund.socketio
 
+import io.github.kaeferfreund.socketio.engineio.EngineClients
+import io.github.kaeferfreund.socketio.engineio.EngineWebSocketClient
+import io.github.kaeferfreund.socketio.engineio.EngineWebSocketConnection
+import io.github.kaeferfreund.socketio.engineio.EngineWebSocketListener
+import io.github.kaeferfreund.socketio.engineio.EngineWebSocketRequest
 import io.github.kaeferfreund.socketio.engineio.parser.EngineIOData
 import io.github.kaeferfreund.socketio.parser.SocketIOValue
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.test.advanceTimeBy
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -32,6 +38,100 @@ class SocketApiTest {
             assertFalse(socket.connected)
             // The application decides to come back.
             socket.open()
+            h.settle()
+            assertTrue(socket.connected)
+            h.close()
+        }
+
+    // A server sends CONNECT_ERROR (and the empty v2.x CONNECT) only as the answer to a CONNECT.
+    // An unrequested one used to destroy a connected socket while it still counted as connected,
+    // so connect() did nothing any more.
+    @Test
+    fun anUnrequestedConnectErrorOrEmptyConnectOnAConnectedSocketIsIgnored() =
+        runClientTest {
+            val h = clientHarness()
+            val errors = ArrayList<Throwable>()
+            val socket = h.manager().socket("/") { onConnectError { errors += it } }
+            h.settle()
+            assertTrue(socket.connected)
+            val id = socket.id
+            val session = h.server.engine.sessions.values.single()
+            session.send("4{\"message\":\"denied\"}")
+            session.send("0")
+            h.settle()
+            assertEquals(emptyList<Throwable>(), errors)
+            assertTrue(socket.connected)
+            assertTrue(socket.active)
+            assertEquals(id, socket.id)
+            h.close()
+        }
+
+    // On an open manager, socket() with autoConnect and a connect() right after it each send a
+    // CONNECT, as in JavaScript. The server answers both and routes the client's packets to the
+    // second socket, so the socket ends on the second id, after two connect events.
+    @Test
+    fun twoConnectsSentOnOneConnectionAreBothAnswered() =
+        runClientTest {
+            val h = clientHarness { namespace("/admin") }
+            val manager = h.manager()
+            h.settle()
+            var connects = 0
+            val socket = manager.socket("/admin") { onConnect { connects++ } }
+            socket.connect()
+            h.settle()
+            val ids = h.server.namespace("/admin").clients.map { it.id }
+            assertEquals(2, ids.size, "$ids")
+            assertEquals(ids.last(), socket.id)
+            assertEquals(2, connects)
+            assertTrue(socket.connected)
+            h.close()
+        }
+
+    // A CONNECT whose send closes the transport synchronously (here a message larger than the
+    // WebSocket client can queue) leaves no pending answer behind: on the next connection, a
+    // CONNECT the socket did not ask for (its auth provider still running) is ignored.
+    @Test
+    fun aConnectWhoseSendClosesTheTransportLeavesNoPendingAnswer() =
+        runClientTest {
+            val h = clientHarness()
+            val limited =
+                object : EngineWebSocketClient {
+                    override fun connect(
+                        request: EngineWebSocketRequest,
+                        listener: EngineWebSocketListener,
+                    ): EngineWebSocketConnection {
+                        val delegate = h.server.clients.webSocket!!.connect(request, listener)
+                        return object : EngineWebSocketConnection by delegate {
+                            override val maxQueuedBytes: Long get() = 1_000
+                        }
+                    }
+                }
+            var calls = 0
+            val pending = CompletableDeferred<Any?>()
+            val provider =
+                AuthProvider {
+                    if (calls++ == 0) mapOf("token" to "x".repeat(2_000)) else pending.await()
+                }
+            val manager =
+                h.manager {
+                    reconnection = false
+                    transports = listOf(Transport.WEBSOCKET)
+                    clients = EngineClients(null, limited)
+                }
+            val errors = ArrayList<Throwable>()
+            val socket = manager.socket(options = SocketOptions { authProvider = provider }) { onConnectError { errors += it } }
+            h.settle()
+            assertFalse(socket.connected)
+            assertEquals(1, calls)
+            socket.connect()
+            h.settle()
+            assertEquals(2, calls)
+            val session = h.server.engine.sessions.values.last { it.isOpen }
+            session.send("0{\"sid\":\"forged\"}")
+            h.settle()
+            assertFalse(socket.connected)
+            assertNull(socket.id)
+            pending.complete(null)
             h.settle()
             assertTrue(socket.connected)
             h.close()

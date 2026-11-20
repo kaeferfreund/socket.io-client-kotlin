@@ -149,6 +149,12 @@ and do not change a certified assertion:
 - Polling follows redirects only within the same origin, and the WebSocket
   handshake none: extra headers, cookies and a POST body are never forwarded to
   another host. Node's polling client follows every redirect with the same headers.
+- A hostile server or URL is handled more strictly than in JavaScript: URL parsing
+  (brackets, scheme case, relative paths, user info), Engine.IO upgrades, heartbeats,
+  cookies and closing, and Socket.IO acknowledgements, namespace CONNECTs and
+  session boundaries. Well-behaved servers see no difference; the details are in
+  the compatibility guide (`URL parsing`, `Stricter session handling`,
+  `Engine.IO connection hardening`).
 - Payloads are `SocketIOValue` trees. Values are converted explicitly
   (`SocketIOValue.of`, kotlinx.serialization); there is no `toJSON()` hook.
 - Optional limits (text length, nesting depth, buffered packets, polling body

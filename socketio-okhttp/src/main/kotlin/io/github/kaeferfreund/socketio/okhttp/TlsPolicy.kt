@@ -25,9 +25,13 @@ import javax.net.ssl.X509TrustManager
  * On Android the default ([systemDefault]) keeps the platform trust manager,
  * so `network_security_config.xml` (pins, user CAs, cleartext rules) applies
  * unchanged. [customTrust] replaces it for this client.
+ *
+ * The policy adds to the OkHttp client it is applied to (see [applyTo]): a
+ * client certificate keeps that client's trust manager, and pins are added to
+ * its `CertificatePinner`.
  */
 public class TlsPolicy private constructor(
-    /** Trust anchors replacing the system trust store; `null` keeps the system (or Network Security Config) trust. */
+    /** Trust anchors replacing the trust manager; `null` keeps the base client's (by default the system or Network Security Config trust). */
     public val trustAnchors: List<X509Certificate>?,
     /** Public-key pins by host pattern, in OkHttp's `sha256/…` form. */
     public val pins: Map<String, List<String>>,
@@ -68,16 +72,27 @@ public class TlsPolicy private constructor(
         password: CharArray,
     ): TlsPolicy = withClientCertificate(keyManagerFromPkcs12(pkcs12, password))
 
-    /** Applies the policy to an OkHttp client builder. */
+    /**
+     * Applies the policy to an OkHttp client builder, on top of what the builder already
+     * configures:
+     * - without [trustAnchors], the builder's trust manager stays in charge, also when a
+     *   [clientKeyManager] is added (a default builder has the platform trust manager, on
+     *   Android with the app's Network Security Config); [customTrust] replaces it;
+     * - [pins] are added to the builder's `CertificatePinner`, whose pins for every host are
+     *   kept. As in OkHttp, a host matched by several patterns accepts any of their pins.
+     */
     public fun applyTo(builder: OkHttpClient.Builder): OkHttpClient.Builder {
+        // What the builder configures so far, read from a client built from it (building has no side effects).
+        val current = if (clientKeyManager != null || pins.isNotEmpty()) builder.build() else null
         if (trustAnchors != null || clientKeyManager != null) {
-            val trustManager = trustAnchors?.let(::trustManagerFor) ?: systemTrustManager()
+            val trustManager = trustAnchors?.let(::trustManagerFor) ?: current?.x509TrustManager ?: systemTrustManager()
             val context = SSLContext.getInstance("TLS")
             context.init(clientKeyManager?.let { arrayOf<KeyManager>(it) }, arrayOf(trustManager), null)
             builder.sslSocketFactory(context.socketFactory, trustManager)
         }
         if (pins.isNotEmpty()) {
             val pinner = CertificatePinner.Builder()
+            current?.certificatePinner?.pins?.forEach { pinner.add(it.pattern, it.toString()) }
             for ((host, values) in pins) pinner.add(host, *values.toTypedArray())
             builder.certificatePinner(pinner.build())
         }

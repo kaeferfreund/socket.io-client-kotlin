@@ -136,6 +136,55 @@ class SocketRobustnessTest {
         }
 
     @Test
+    fun clearRecoveryStateDropsTheEmitsThePreviousUserLeftInTheSendBuffer() =
+        runClientTest {
+            var token = "alice"
+            val h = clientHarness()
+            val socket = h.manager().socket(options = SocketOptions { authProvider = AuthProvider { mapOf("token" to token) } })
+            h.settle()
+            assertTrue(socket.connected)
+            socket.disconnect()
+            val alice = async { runCatching { socket.emitWithAck("echo", "alice-data") } }
+            socket.emit("echo", "alice-plain")
+            h.settle()
+            assertEquals(2, socket.pendingEmits.value)
+            // The documented user switch.
+            socket.clearRecoveryState()
+            token = "bob"
+            socket.connect()
+            socket.emit("echo", "bob-data")
+            h.settle()
+            assertTrue(socket.connected)
+            assertTrue(alice.await().exceptionOrNull() is SocketDisconnectedException)
+            val sent = h.server.received.filter { it.type == SocketIOPacketType.EVENT }.map { it.data?.array?.get(1)?.string }
+            assertEquals(listOf("bob-data"), sent)
+            assertEquals(0, socket.pendingEmits.value)
+            assertEquals(0, socket.pendingAcknowledgements.value)
+        }
+
+    @Test
+    fun clearRecoveryStateDropsThePreviousUsersRetryQueue() =
+        runClientTest {
+            val h = clientHarness { namespace("/").onConnection { c -> c.on("never") { _, _ -> } } }
+            val socket = h.manager().socket(options = SocketOptions { retries = 2 })
+            h.settle()
+            val alice = async { runCatching { socket.emitWithAck("never", "alice-retry") } }
+            h.settle()
+            assertEquals(1, h.server.received.count { it.type == SocketIOPacketType.EVENT })
+            socket.disconnect()
+            h.settle()
+            assertEquals(1, socket.pendingEmits.value)
+            socket.clearRecoveryState()
+            socket.connect()
+            h.settle()
+            assertTrue(socket.connected)
+            assertTrue(alice.await().exceptionOrNull() is SocketDisconnectedException)
+            assertEquals(1, h.server.received.count { it.type == SocketIOPacketType.EVENT })
+            assertEquals(0, socket.pendingEmits.value)
+            assertEquals(0, socket.pendingAcknowledgements.value)
+        }
+
+    @Test
     fun aMissingHttpStackIsAConnectErrorNotACrash() =
         runClientTest {
             val h = clientHarness()

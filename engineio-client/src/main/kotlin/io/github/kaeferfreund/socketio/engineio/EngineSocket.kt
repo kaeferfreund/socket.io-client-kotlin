@@ -186,6 +186,14 @@ public class EngineSocket(
     }
 
     private fun onOpen() {
+        // A handshake that arrives after close() only lets the buffered packets go out before
+        // the close. JavaScript reopens the engine here: it reports "open", starts upgrade
+        // probes and extends the heartbeat deadline again on every ping, so a server that
+        // never completes the pending write could keep a closed connection alive.
+        if (readyState == EngineState.CLOSING) {
+            flush()
+            return
+        }
         readyState = EngineState.OPEN
         priorWebsocketSuccess.set(transport?.name == WebSocketTransport.NAME)
         events.emit(EngineEvent.Open)
@@ -202,6 +210,9 @@ public class EngineSocket(
         events.emit(EngineEvent.Heartbeat)
         when (packet.type) {
             EngineIOPacketType.OPEN -> {
+                // JavaScript treats every OPEN packet as a new handshake, so a server repeating it
+                // starts another round of upgrade probes each time. Only the first one counts.
+                if (id != null) return
                 val handshake = parseHandshake(packet.text)
                 if (handshake == null) {
                     onError(TransportException("invalid handshake"))
@@ -211,10 +222,16 @@ public class EngineSocket(
             }
 
             EngineIOPacketType.PING -> {
-                sendPacket(EngineIOPacketType.PONG, null, EngineIOPacketOptions.DEFAULT, null)
+                // One pong waiting for the transport answers every ping: JavaScript queues one per
+                // ping, so pings during a stalled write would grow the buffer without bound.
+                if (!hasUnsentPong()) sendPacket(EngineIOPacketType.PONG, null, EngineIOPacketOptions.DEFAULT, null)
                 events.emit(EngineEvent.Ping)
                 events.emit(EngineEvent.Pong)
-                resetPingTimeout()
+                // A closing engine no longer answers pings (sendPacket drops the pong, as in
+                // JavaScript), so the server times the session out by the current deadline.
+                // JavaScript still extends that deadline, which lets a server that never
+                // completes the pending write keep a closed connection polling forever.
+                if (readyState != EngineState.CLOSING) resetPingTimeout()
             }
 
             EngineIOPacketType.ERROR -> onError(EngineServerException(packet.text))
@@ -225,8 +242,13 @@ public class EngineSocket(
         }
     }
 
+    /** Whether a pong is buffered that was not yet handed to the transport. */
+    private fun hasUnsentPong(): Boolean = (prevBufferLen until buffer.size).any { buffer[it].type == EngineIOPacketType.PONG }
+
     private fun onHandshake(handshake: Handshake) {
-        upgrades = handshake.upgrades.filter { it in transportNames }
+        // Unlike JavaScript, a transport is probed at most once and never the one in use:
+        // each offer opens a connection, and the server controls the list.
+        upgrades = filterUpgrades(handshake.upgrades).distinct().filter { it != transport?.name }
         events.emit(EngineEvent.HandshakeReceived(handshake))
         id = handshake.sid
         transport?.query?.set("sid", handshake.sid)
@@ -434,6 +456,9 @@ public class EngineSocket(
                 return
             }
         var failed = false
+
+        // Whether this probe set `upgrading` and paused the current transport.
+        var pausing = false
         priorWebsocketSuccess.set(false)
         val subscriptions = ArrayList<Cancellable>()
         val cleanup = {
@@ -447,6 +472,17 @@ public class EngineSocket(
             cleanup()
             transport?.close()
             transport = null
+            if (pausing) {
+                // JavaScript leaves `upgrading` set and the polling transport paused when the
+                // probe fails after its pong: nothing is written or polled any more, and close()
+                // waits for an upgrade event that already happened. The upgrade is undone instead.
+                pausing = false
+                upgrading = false
+                if (readyState == EngineState.OPEN || readyState == EngineState.CLOSING) {
+                    this.transport?.resume()
+                    flush()
+                }
+            }
         }
 
         val onError = { reason: String ->
@@ -465,6 +501,7 @@ public class EngineSocket(
                     val msg = event.packet
                     if (msg.type == EngineIOPacketType.PONG && msg.text == "probe") {
                         upgrading = true
+                        pausing = true
                         events.emit(EngineEvent.Upgrading(probeTransport))
                         if (transport == null) return@once
                         priorWebsocketSuccess.set(probeTransport.name == WebSocketTransport.NAME)
@@ -476,6 +513,7 @@ public class EngineSocket(
                             probeTransport.send(listOf(EngineIOPacket(EngineIOPacketType.UPGRADE)))
                             events.emit(EngineEvent.Upgrade(probeTransport))
                             transport = null
+                            pausing = false
                             upgrading = false
                             flush()
                         }

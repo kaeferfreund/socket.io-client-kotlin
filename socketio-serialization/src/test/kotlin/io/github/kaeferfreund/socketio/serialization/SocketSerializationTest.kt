@@ -38,6 +38,11 @@ class SocketSerializationTest {
         val id: Long,
     )
 
+    @Serializable
+    data class Node(
+        val next: Node? = null,
+    )
+
     private class Harness(
         val server: FakeSocketIOServer,
         val manager: SocketManager,
@@ -187,6 +192,32 @@ class SocketSerializationTest {
             assertTrue(h.socket.connected)
         }
 
+    /**
+     * kotlinx.serialization decodes recursive classes on the stack; a payload nested
+     * deeper than the stack is a payload that does not decode, not a listener failure.
+     */
+    @Test
+    fun aPayloadTooDeepToDecodeGoesToOnError() =
+        serializationTest { managers ->
+            val received = ArrayList<Node>()
+            val failures = ArrayList<Exception>()
+            val h =
+                connected {
+                    onSerializable<Node>("node", onError = { _, error -> failures += error }) { node, _ -> received += node }
+                }.also { managers += it.manager }
+            var deep: SocketIOValue = SocketIOValue.EMPTY_OBJECT
+            repeat(200_000) { deep = SocketIOValue.Object(mapOf("next" to deep)) }
+            val namespace = h.server.namespace("/")
+            namespace.emit("node", deep)
+            namespace.emit("node", mapOf("next" to emptyMap<String, Any>()))
+            runCurrent()
+            assertEquals(listOf(Node(Node())), received)
+            val failure = assertInstanceOf(SerializationException::class.java, failures.single())
+            assertInstanceOf(StackOverflowError::class.java, failure.cause)
+            assertTrue(h.listenerErrors.isEmpty())
+            assertTrue(h.socket.connected)
+        }
+
     @Test
     fun theDefaultOnErrorReachesTheListenerErrorHandler() =
         serializationTest { managers ->
@@ -226,5 +257,31 @@ class SocketSerializationTest {
             assertEquals(Receipt(7), results[0].getOrThrow())
             assertInstanceOf(SerializationException::class.java, results[1].exceptionOrNull())
             assertInstanceOf(AckTimeoutException::class.java, results[2].exceptionOrNull())
+        }
+
+    /** The decoding helpers report a payload too deep for a recursive class as a [SerializationException]. */
+    @Test
+    fun anAcknowledgementTooDeepToDecodeIsASerializationException() =
+        serializationTest { managers ->
+            val h = connected().also { managers += it.manager }
+            var deep: SocketIOValue = SocketIOValue.EMPTY_OBJECT
+            repeat(200_000) { deep = SocketIOValue.Object(mapOf("next" to deep)) }
+            val direct = assertThrows<SerializationException> { SocketIOSerialization.decode(Node.serializer(), deep) }
+            assertInstanceOf(StackOverflowError::class.java, direct.cause)
+            assertThrows<SerializationException> { deep.decodeAs<Node>() }
+            h.server.namespace("/").clients.single().on("deep") { _, ack -> ack?.invoke(listOf(deep)) }
+            val thrown =
+                assertThrows<SerializationException> {
+                    val node: Node = h.socket.emitSerializableWithAck("deep", "x")
+                    println(node)
+                }
+            assertInstanceOf(StackOverflowError::class.java, thrown.cause)
+            val results = ArrayList<Result<Node>>()
+            h.socket.emit("deep", ack = serializableAck<Node> { results += it })
+            runCurrent()
+            val failure = assertInstanceOf(SerializationException::class.java, results.single().exceptionOrNull())
+            assertInstanceOf(StackOverflowError::class.java, failure.cause)
+            assertTrue(h.listenerErrors.isEmpty())
+            assertTrue(h.socket.connected)
         }
 }

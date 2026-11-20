@@ -5,6 +5,7 @@ import io.github.kaeferfreund.socketio.engineio.EngineClients
 import io.github.kaeferfreund.socketio.engineio.EngineHttpCallback
 import io.github.kaeferfreund.socketio.engineio.EngineHttpClient
 import io.github.kaeferfreund.socketio.engineio.EngineHttpRequest
+import io.github.kaeferfreund.socketio.engineio.EngineState
 import io.github.kaeferfreund.socketio.engineio.parser.EngineIOPacketType
 import io.github.kaeferfreund.socketio.parser.SocketIOValue
 import kotlinx.coroutines.Job
@@ -19,6 +20,8 @@ import org.junit.jupiter.api.Test
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
 /** `close()` is final: nothing that waits on the manager may be left hanging, and nothing is cut short. */
@@ -74,6 +77,55 @@ class SocketManagerCloseTest {
             assertFalse(manager.executor.isShutdown)
             advanceTimeBy(SocketManager.CLOSE_GRACE)
             h.settle()
+            assertTrue(manager.executor.isShutdown)
+        }
+
+    @Test
+    fun aClosedEngineThatCannotFlushIsForceClosedAfterTheGracePeriod() =
+        runClientTest {
+            // A heartbeat this long gives the closing engine no deadline of its own.
+            val h = clientHarness(upgrades = emptyList(), pingInterval = 10.minutes, pingTimeout = 10.minutes)
+            val manager = h.manager { reconnection = false }
+            val socket = manager.socket("/")
+            h.settle()
+            assertTrue(socket.connected)
+            val engine = manager.engine!!
+            h.server.engine.stall = { it.method == "POST" }
+            socket.disconnect()
+            h.settle()
+            assertEquals(EngineState.CLOSING, engine.readyState)
+            advanceTimeBy(SocketManager.CLOSE_GRACE - 1.milliseconds)
+            h.settle()
+            assertEquals(EngineState.CLOSING, engine.readyState)
+            advanceTimeBy(1.milliseconds)
+            h.settle()
+            assertEquals(EngineState.CLOSED, engine.readyState)
+            assertFalse(manager.executor.isShutdown)
+        }
+
+    @Test
+    fun closingTheManagerAlsoEndsAnEarlierEngineThatIsStillClosing() =
+        runClientTest {
+            val h = clientHarness(upgrades = emptyList(), pingInterval = 10.minutes, pingTimeout = 10.minutes)
+            val manager = h.manager()
+            val socket = manager.socket("/")
+            h.settle()
+            val first = manager.engine!!
+            val sid = first.id
+            h.server.engine.stall = { it.method == "POST" && it.query["sid"] == sid }
+            socket.disconnect()
+            h.settle()
+            assertEquals(EngineState.CLOSING, first.readyState)
+            socket.connect()
+            h.settle()
+            assertTrue(socket.connected)
+            assertNotSame(first, manager.engine)
+            // The current engine closes at once; the earlier one still waits for its stalled write.
+            manager.close()
+            h.settle()
+            advanceTimeBy(SocketManager.CLOSE_GRACE)
+            h.settle()
+            assertEquals(EngineState.CLOSED, first.readyState)
             assertTrue(manager.executor.isShutdown)
         }
 

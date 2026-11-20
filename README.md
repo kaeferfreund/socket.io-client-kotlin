@@ -91,7 +91,7 @@ dependencyResolutionManagement {
 
 // app/build.gradle.kts
 dependencies {
-    implementation("io.github.kaeferfreund.socketio:socketio-android:17.0.1")
+    implementation("io.github.kaeferfreund.socketio:socketio-android:17.1.0")
 }
 ```
 

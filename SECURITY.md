@@ -26,7 +26,11 @@ setup are development tools; report problems with them as normal issues.
 - Peer input is treated as hostile: the parsers only fail with their parse
   exception, are fuzzed with seeded malformed input, and optional limits bound
   sizes, nesting and buffered packets ([Configuration](Documentation/Guides/Configuration.md)).
+  These limits are off by default, as in the JavaScript client; apps that talk
+  to servers they do not control should set them, see
+  [Hardening for untrusted servers](Documentation/Guides/Configuration.md#hardening-for-untrusted-servers).
 - There is no switch that turns certificate verification off; private CAs, pins and
   client certificates go through `TlsPolicy`.
 - CI runs with read-only tokens, pinned action commits and no persisted
-  credentials; Dependabot proposes Gradle and GitHub Actions updates.
+  credentials; Dependabot proposes Gradle and GitHub Actions updates. Release
+  jobs build from source without restoring the Gradle or build cache of CI runs.

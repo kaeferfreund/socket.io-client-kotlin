@@ -9,6 +9,9 @@ import io.github.kaeferfreund.socketio.engineio.EngineWebSocketRequest
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
 import mockwebserver3.SocketEffect
+import okhttp3.ConnectionPool
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
@@ -126,6 +129,114 @@ class OkHttpEngineClientsTest {
         assertTrue(failure.get(5, TimeUnit.SECONDS) is java.io.IOException)
     }
 
+    // Applications log connect errors; a rejected header value or the URL query (tokens, sid)
+    // must not end up in the message or in any cause of it.
+    @Test
+    fun anInvalidRequestReportsNeitherHeaderValuesNorTheQuery() {
+        val clients = OkHttpEngineClients()
+        val secret = "s3cret-tökén"
+        val failures = mutableListOf<Throwable>()
+        val badHeader = EngineHttpRequest("GET", server.url("/socket.io/?EIO=4&token=$secret").toString(), listOf("X-Token" to secret), null, null)
+        failures += execute(clients, badHeader).exceptionOrNull()!!
+        // Without a scheme, OkHttp's message quotes the start of the URL: here the query or fragment.
+        val badUrls = listOf("?$secret=1", "#$secret")
+        for (badUrl in badUrls) {
+            val raw = runCatching { Request.Builder().url(badUrl) }.exceptionOrNull()!!
+            assertTrue("s3cr" in raw.message!!, raw.message)
+            failures += execute(clients, EngineHttpRequest("GET", badUrl, emptyList(), null, null)).exceptionOrNull()!!
+            failures += webSocketFailure(EngineWebSocketRequest(badUrl, emptyList(), emptyList(), null)).first
+        }
+        val wsFailure = CompletableFuture<Throwable>()
+        clients.connect(
+            EngineWebSocketRequest(server.url("/socket.io/?token=$secret").toString().replace("http", "ws"), listOf("X-Token" to secret), emptyList(), null),
+            object : EngineWebSocketListener {
+                override fun onOpen(responseHeaders: List<Pair<String, String>>) = Unit
+
+                override fun onMessage(text: String) = Unit
+
+                override fun onMessage(bytes: ByteArray) = Unit
+
+                override fun onClosed(
+                    code: Int,
+                    reason: String,
+                ) = Unit
+
+                override fun onFailure(
+                    error: Throwable,
+                    httpStatus: Int?,
+                ) {
+                    wsFailure.complete(error)
+                }
+            },
+        )
+        failures += wsFailure.get(5, TimeUnit.SECONDS)
+        for (failure in failures) {
+            assertTrue(failure is java.io.IOException)
+            val messages = generateSequence(failure) { it.cause }.map { it.toString() }.toList()
+            assertTrue(messages.none { "s3cr" in it }, "secret in $messages")
+        }
+        assertTrue("X-Token" in failures[0].message!!, failures[0].message)
+        assertTrue("scheme" in failures[1].message!!, failures[1].message)
+        assertEquals(0, server.requestCount)
+    }
+
+    // Tokens are often sent as a WebSocket subprotocol; OkHttp's error for a rejected one quotes the value.
+    @Test
+    fun anInvalidWebSocketProtocolIsNotReported() {
+        val secret = "s3cret-tökén"
+        val url = server.url("/socket.io/").toString().replace("http", "ws")
+        val failure = webSocketFailure(EngineWebSocketRequest(url, emptyList(), listOf("token.$secret"), null))
+        assertTrue(failure.first is java.io.IOException)
+        val messages = generateSequence(failure.first) { it.cause }.map { it.toString() }.toList()
+        assertTrue(messages.none { "s3cret" in it }, "secret in $messages")
+        assertTrue("Sec-WebSocket-Protocol" in failure.first.message!!, failure.first.message)
+        assertEquals(0, server.requestCount)
+    }
+
+    @Test
+    fun webSocketProtocolsReplaceAProtocolHeader() {
+        server.enqueue(MockResponse.Builder().code(400).build())
+        val request =
+            EngineWebSocketRequest(
+                server.url("/socket.io/").toString().replace("http", "ws"),
+                listOf("Sec-WebSocket-Protocol" to "old"),
+                listOf("a", "b"),
+                null,
+            )
+        assertEquals(400, webSocketFailure(request).second)
+        assertEquals(listOf("a, b"), server.takeRequest().headers.values("Sec-WebSocket-Protocol"))
+    }
+
+    private fun webSocketFailure(
+        request: EngineWebSocketRequest,
+        clients: OkHttpEngineClients = OkHttpEngineClients(),
+    ): Pair<Throwable, Int?> {
+        val failure = CompletableFuture<Pair<Throwable, Int?>>()
+        clients.connect(
+            request,
+            object : EngineWebSocketListener {
+                override fun onOpen(responseHeaders: List<Pair<String, String>>) = Unit
+
+                override fun onMessage(text: String) = Unit
+
+                override fun onMessage(bytes: ByteArray) = Unit
+
+                override fun onClosed(
+                    code: Int,
+                    reason: String,
+                ) = Unit
+
+                override fun onFailure(
+                    error: Throwable,
+                    httpStatus: Int?,
+                ) {
+                    failure.complete(error to httpStatus)
+                }
+            },
+        )
+        return failure.get(5, TimeUnit.SECONDS)
+    }
+
     @Test
     fun reportsErrorStatusesAsResponses() {
         server.enqueue(MockResponse.Builder().code(400).body("{\"code\":1,\"message\":\"Session ID unknown\"}").build())
@@ -185,6 +296,69 @@ class OkHttpEngineClientsTest {
         } finally {
             other.close()
         }
+    }
+
+    // The origin is checked before the redirect is followed: no DNS lookup, TCP connection or TLS
+    // handshake (which could present a client certificate) reaches the other origin.
+    @Test
+    fun aRedirectToAnotherOriginOpensNoConnectionToIt() {
+        val other = MockWebServer()
+        other.start()
+        try {
+            val connected = java.util.Collections.synchronizedList(mutableListOf<Int>())
+            val base =
+                okhttp3.OkHttpClient.Builder()
+                    .eventListener(
+                        object : okhttp3.EventListener() {
+                            override fun connectStart(
+                                call: okhttp3.Call,
+                                inetSocketAddress: java.net.InetSocketAddress,
+                                proxy: java.net.Proxy,
+                            ) {
+                                connected += inetSocketAddress.port
+                            }
+                        },
+                    ).build()
+            server.enqueue(MockResponse.Builder().code(302).addHeader("Location", other.url("/collect").toString()).build())
+            assertTrue(execute(OkHttpEngineClients(base), get()).exceptionOrNull() is java.net.ProtocolException)
+            // Distinct ports: where "localhost" resolves to both ::1 and 127.0.0.1, OkHttp
+            // tries each address of the first origin, so one origin can count twice.
+            assertEquals(setOf(server.port), connected.toSet())
+        } finally {
+            other.close()
+        }
+    }
+
+    @Test
+    fun followsSameOriginRedirectsLikeOkHttp() {
+        val clients = OkHttpEngineClients()
+        // 303 turns a POST into a GET without body; 307 and 308 repeat it with its body.
+        val post = EngineHttpRequest("POST", server.url("/socket.io/?EIO=4&sid=a").toString(), listOf("X-Api-Key" to "k"), "4hi", null)
+        server.enqueue(MockResponse.Builder().code(303).addHeader("Location", "/socket.io/?moved=303").build())
+        server.enqueue(MockResponse.Builder().body("got").build())
+        assertEquals("got", execute(clients, post).getOrThrow().body)
+        server.takeRequest()
+        val redirected = server.takeRequest()
+        assertEquals("GET", redirected.method)
+        assertEquals("/socket.io/?moved=303", redirected.target)
+        assertEquals("k", redirected.headers["X-Api-Key"])
+        assertEquals(0L, redirected.bodySize)
+        for (code in listOf(307, 308)) {
+            server.enqueue(MockResponse.Builder().code(code).addHeader("Location", "/socket.io/?moved=$code").build())
+            server.enqueue(MockResponse.Builder().body("posted").build())
+            assertEquals("posted", execute(clients, post).getOrThrow().body)
+            server.takeRequest()
+            val repeated = server.takeRequest()
+            assertEquals("POST", repeated.method)
+            assertEquals("4hi", repeated.body!!.utf8())
+        }
+        // A base client that follows no redirects keeps doing so.
+        server.enqueue(MockResponse.Builder().code(302).addHeader("Location", "/socket.io/?moved=1").build())
+        val noRedirects = OkHttpEngineClients(okhttp3.OkHttpClient.Builder().followRedirects(false).build())
+        assertEquals(302, execute(noRedirects, get()).getOrThrow().status)
+        // A redirect loop ends like in OkHttp.
+        repeat(21) { server.enqueue(MockResponse.Builder().code(302).addHeader("Location", "/socket.io/?loop=$it").build()) }
+        assertTrue(execute(clients, get()).exceptionOrNull() is java.net.ProtocolException)
     }
 
     @Test
@@ -392,6 +566,85 @@ class OkHttpEngineClientsTest {
             if (threshold == null) assertNull(offered) else assertEquals("permessage-deflate", offered)
             connection.cancel()
         }
+    }
+
+    // RFC 6455 4.1: an extension the client did not offer fails the connection. With compression
+    // disabled the client offers none, so a compressed message must never be inflated.
+    @Test
+    fun anUnrequestedPerMessageDeflateResponseFailsTheConnection() {
+        server.enqueue(
+            MockResponse.Builder()
+                .addHeader("Sec-WebSocket-Extensions", "permessage-deflate")
+                .webSocketUpgrade(
+                    object : WebSocketListener() {
+                        override fun onOpen(
+                            webSocket: WebSocket,
+                            response: Response,
+                        ) {
+                            webSocket.send("4" + "x".repeat(4096))
+                        }
+                    },
+                ).build(),
+        )
+        val events = LinkedBlockingQueue<String>()
+        OkHttpEngineClients().connect(
+            EngineWebSocketRequest(server.url("/socket.io/").toString().replace("http", "ws"), emptyList(), emptyList(), null),
+            object : EngineWebSocketListener {
+                override fun onOpen(responseHeaders: List<Pair<String, String>>) {
+                    events.put("open")
+                }
+
+                override fun onMessage(text: String) {
+                    events.put("message")
+                }
+
+                override fun onMessage(bytes: ByteArray) {
+                    events.put("message")
+                }
+
+                override fun onClosed(
+                    code: Int,
+                    reason: String,
+                ) {
+                    events.put("closed:$code")
+                }
+
+                override fun onFailure(
+                    error: Throwable,
+                    httpStatus: Int?,
+                ) {
+                    events.put("failure:${error.javaClass.simpleName}")
+                }
+            },
+        )
+        assertEquals("failure:ProtocolException", events.poll(5, TimeUnit.SECONDS))
+        assertNull(server.takeRequest().headers["Sec-WebSocket-Extensions"])
+    }
+
+    // The refused upgrade must release its connection: a 101 response the client abandons
+    // otherwise stays allocated in the pool, one leaked socket per refused handshake.
+    @Test
+    fun aRefusedExtensionReleasesTheConnection() {
+        val clients = OkHttpEngineClients(OkHttpClient.Builder().connectionPool(ConnectionPool()).build())
+        // OkHttp ends a refused upgrade after reporting it; the dispatcher goes idle once it has.
+        val idle = LinkedBlockingQueue<Unit>()
+        clients.client.dispatcher.idleCallback = Runnable { idle.put(Unit) }
+        val url = server.url("/socket.io/").toString().replace("http", "ws")
+        repeat(5) {
+            server.enqueue(
+                MockResponse.Builder()
+                    .addHeader("Sec-WebSocket-Extensions", "permessage-deflate")
+                    .webSocketUpgrade(object : WebSocketListener() {})
+                    .build(),
+            )
+            val (error, status) = webSocketFailure(EngineWebSocketRequest(url, emptyList(), emptyList(), null), clients)
+            assertTrue(error is java.net.ProtocolException, error.toString())
+            assertTrue("the server accepted a WebSocket extension that was not offered" in error.message!!, error.message)
+            assertNull(status)
+            assertEquals(Unit, idle.poll(5, TimeUnit.SECONDS))
+        }
+        clients.client.connectionPool.evictAll()
+        assertEquals(0, clients.client.connectionPool.connectionCount())
     }
 
     @Test

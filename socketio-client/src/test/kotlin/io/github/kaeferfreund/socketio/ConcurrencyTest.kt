@@ -101,6 +101,31 @@ class ConcurrencyTest {
         ModelCheckingOptions().iterations(20).invocationsPerIteration(500).threads(2).actorsPerThread(2).check(ListenerRegistry::class)
     }
 
+    /** Sequentially, a second `SocketIO.io` lookup of a namespace always gets a new connection; concurrently too. */
+    @Test
+    fun concurrentLookupsOfOneNamespaceNeverShareASocket() {
+        val threads = 4
+        try {
+            repeat(50) { round ->
+                val url = "http://lookup-$round.test/"
+                val start = CyclicBarrier(threads)
+                val sockets = ConcurrentHashMap.newKeySet<Socket>()
+                val workers =
+                    List(threads) {
+                        thread {
+                            start.await()
+                            sockets += SocketIO.io(url, SocketManagerOptions { autoConnect = false })
+                        }
+                    }
+                workers.forEach { it.join() }
+                assertEquals(threads, sockets.size, "round $round: callers shared a socket")
+                assertEquals(threads, sockets.map { it.manager }.toSet().size, "round $round: two callers got the same connection for one namespace")
+            }
+        } finally {
+            SocketIO.closeAll()
+        }
+    }
+
     @Test
     fun aListenerOnTheCallbackDispatcherQueuesItsCallsOnTheExecutor() {
         val callbacks = Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "callbacks") }

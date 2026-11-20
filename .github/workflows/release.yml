@@ -53,8 +53,10 @@ jobs:
           gh run view "$run" -R "$GITHUB_REPOSITORY" --json jobs --jq '[.jobs[] | {name, conclusion}]' > "$RUNNER_TEMP/jobs.json"
           gh run download "$run" -R "$GITHUB_REPOSITORY" -n parity-summary -D "$RUNNER_TEMP/evidence"
       - name: Release notes from CHANGELOG.md and the CI evidence
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          python3 scripts/release-notes.py --version "${{ steps.version.outputs.version }}" \
+          python3 scripts/release-notes.py --version "$VERSION" \
             --commit "$GITHUB_SHA" --ci-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$CI_RUN" \
             --jobs "$RUNNER_TEMP/jobs.json" --parity "$RUNNER_TEMP/evidence/parity-summary.json" \
             --coverage "$RUNNER_TEMP/evidence/coverage-summary.json" --out "$RUNNER_TEMP/release-notes.md"
@@ -79,9 +81,12 @@ jobs:
           java-version: |
             21
             17
+      # Release jobs build from scratch: they neither restore the Gradle cache
+      # that CI runs write nor use the build cache, so nothing a pull request or
+      # branch build left behind can reach the signed artifacts.
       - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
         with:
-          cache-read-only: true
+          cache-disabled: true
       # The task waits until Central has validated the deployment (signatures,
       # POM, javadoc and sources) and releases it; the verify job waits for the
       # download. Without the configuration cache the signing key and token are
@@ -92,7 +97,7 @@ jobs:
           ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
           ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }}
           ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_KEY_PASSWORD }}
-        run: ./gradlew publishAndReleaseToMavenCentral --no-configuration-cache
+        run: ./gradlew publishAndReleaseToMavenCentral --no-configuration-cache --no-build-cache
 
   github-packages:
     name: Publish to GitHub Packages
@@ -114,13 +119,13 @@ jobs:
             17
       - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
         with:
-          cache-read-only: true
+          cache-disabled: true
       - name: Publish the signed artifacts
         env:
           GITHUB_TOKEN: ${{ github.token }}
           ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }}
           ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_KEY_PASSWORD }}
-        run: ./gradlew publishAllPublicationsToGitHubPackagesRepository --no-configuration-cache
+        run: ./gradlew publishAllPublicationsToGitHubPackagesRepository --no-configuration-cache --no-build-cache
 
   verify:
     name: Both repositories serve the release
@@ -162,7 +167,7 @@ jobs:
             17
       - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
         with:
-          cache-read-only: true
+          cache-disabled: true
       - name: The README quick start compiles against Maven Central
         run: bash scripts/test-consumer.sh --maven-central
 

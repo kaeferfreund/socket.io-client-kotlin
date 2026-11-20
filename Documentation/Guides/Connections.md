@@ -41,10 +41,23 @@ val admin = SocketIO.io("https://example.com/admin") // same connection
 ```
 
 A new connection is opened instead when `forceNew = true`, when `multiplex = false`,
-or when the cached manager already has that namespace. A manager closed with
-`close()` leaves the cache; the next lookup creates a new one. `SocketIO.closeAll()`
-closes every cached manager. Explicit managers are the recommended style when an app needs
-control over the connection's lifetime.
+or when the cached manager already has that namespace (also when two threads look up
+the same namespace at once: only one of them gets the cached manager). A manager
+closed with `close()` leaves the cache; the next lookup creates a new one.
+`SocketIO.closeAll()` closes every cached manager. Managers stay cached until they are
+closed, so use `SocketIO.io` with a fixed set of server URLs.
+
+A shared manager keeps the `SocketManagerOptions` of the call that created it. As in
+JavaScript, the options of a later call for the same server — TLS settings, client
+certificates, `extraHeaders`, `query` (also from the URL), limits — are **not applied**
+to the connection that call gets; its `SocketOptions` (`auth`, retries) still apply to
+its namespace. The client logs a warning when a call passes options or a query that
+the manager was not created with; a call with the default options and no query asks
+for nothing and logs none. Pass `forceNew = true`, or create a `SocketManager`
+yourself, for a connection with its own security settings or credentials, and use one
+manager per user when an app talks to the server as more than one user. Explicit
+managers are the recommended style when an app needs control over the connection's
+lifetime.
 
 ## Authentication
 
@@ -226,9 +239,25 @@ Recovery is not guaranteed: the server discards the session after
 `maxDisconnectionDuration`, after a restart, and after a deliberate disconnect by
 either side. Always handle a fresh session. The client does not deduplicate replayed
 events, and [retries](Acknowledgements.md#retries) may resend client events; make
-handlers idempotent where duplicates matter. To switch to another user, call
-`socket.clearRecoveryState()` before the next connect (the new session starts fresh),
-or close the manager and create a new one.
+handlers idempotent where duplicates matter.
+
+To switch to another user on the same socket, disconnect, call
+`socket.clearRecoveryState()`, update the credentials and connect again:
+
+```kotlin
+socket.disconnect()
+socket.clearRecoveryState()
+token = newUserToken // read by the auth provider
+socket.connect()
+```
+
+`clearRecoveryState()` makes the next CONNECT start a fresh session and drops what
+the previous user left waiting: emits in the send buffer and the retry queue, and
+events received before a CONNECT. Their acknowledgements fail with
+`SocketDisconnectedException`, so nothing of the previous user is sent under the
+new identity. Emits made after the call are kept. Listeners stay registered; remove
+the previous user's listeners yourself. Closing the manager and creating a new one
+is the other clean way to switch users.
 
 ## Pausing and network changes
 
