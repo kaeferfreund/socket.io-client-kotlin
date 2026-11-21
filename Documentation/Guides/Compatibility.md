@@ -140,6 +140,8 @@ bound. A well-behaved server never notices these differences.
     creation;
   - attributes end at any `;`, with or without a space, and their names are
     case-insensitive, `Expires` and `Max-Age` included;
+  - a valid `Max-Age` takes precedence over `Expires` in either order (RFC 6265
+    5.3); the Node jar lets the later attribute win;
   - an explicit `Cookie` from `extraHeaders` is the whole `Cookie` header on
     the server's host; the Node jar replaces it with its own cookies there.
 

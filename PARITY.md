@@ -160,10 +160,12 @@ and do not change a certified assertion:
   OkHttp's public suffix list, `Path` matched strictly (also on the URL that set
   the cookie), `Secure`, the `__Secure-`/`__Host-` prefixes, a store key with
   the host-only flag, longer paths first in the `Cookie` header, attributes split
-  on any `;` with case-insensitive names, and per-domain limits. An explicit
-  `Cookie` from `extraHeaders` is the whole `Cookie` header on the server's host,
-  where the Node jar replaces it. `KT-OKHTTP` and `KT-ENGINE` name the evidence
-  tests; the upstream cookie assertions (`JS-178` to `JS-182`) hold unchanged.
+  on any `;` with case-insensitive names, `Max-Age` before `Expires` in either
+  order, and per-domain limits. An explicit `Cookie` from `extraHeaders` is the
+  whole `Cookie` header on the server's host, where the Node jar replaces it.
+  `KT-OKHTTP` and `KT-ENGINE` name the evidence tests; the upstream cookie
+  assertions `JS-178` to `JS-180` and `JS-182` hold unchanged, and `JS-181` now
+  expects the `Max-Age` expiry (the Node jar lets the later attribute win).
 - A hostile server or URL is handled more strictly than in JavaScript: URL parsing
   (brackets, scheme case, relative paths, user info), Engine.IO upgrades, heartbeats,
   cookies and closing, and Socket.IO acknowledgements, namespace CONNECTs and

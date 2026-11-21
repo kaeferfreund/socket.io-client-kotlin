@@ -62,6 +62,8 @@ All notable changes to this project are documented here. The format follows
     17.1.0, like the Node jar, used the order of creation only;
   - attributes end at any `;` and their names are case-insensitive, `Expires`
     and `Max-Age` included; the Node jar splits on `"; "` and knows one spelling;
+  - a valid `Max-Age` takes precedence over `Expires` in either order (RFC 6265
+    5.3); 17.1.0, like the Node jar, let the later attribute win;
   - the 180-cookie limit applies per cookie domain, with 3000 in all, so one
     host cannot evict the cookies of another;
   - hosts are compared in canonical form: IDNA ASCII, lowercase, without a

@@ -278,7 +278,7 @@ sends every cookie to every request:
 | `Path` | Must match the request path on a `/` boundary of the percent-encoded path (`Path=/a` matches `/a` and `/a/b`, not `/ab` or `/a%2Fb/`), also on the URL that set the cookie; without it, the directory of the request path |
 | `Secure` | Sent over HTTPS/WSS only, and ignored when set over plain HTTP; plain HTTP cannot replace or delete a live one either (RFC 6265bis). Loopback hosts (`localhost`, `127.0.0.0/8`, `::1`; not names under `localhost`) count as secure, as in browsers |
 | `__Secure-`, `__Host-` name prefix | `__Secure-` needs `Secure`; `__Host-` needs `Secure`, no `Domain` and `Path=/` (RFC 6265bis, in any case). Otherwise the cookie is ignored |
-| `Expires`, `Max-Age` | An expired cookie is no longer sent; `Max-Age` counts from the response that set it, also on a redirect |
+| `Expires`, `Max-Age` | An expired cookie is no longer sent; `Max-Age` counts from the response that set it, also on a redirect, and takes precedence over `Expires` |
 
 Attributes end at any `;` and their names are case-insensitive. A cookie replaces
 the one with the same name, domain, host-only flag and path (RFC 6265bis), so a

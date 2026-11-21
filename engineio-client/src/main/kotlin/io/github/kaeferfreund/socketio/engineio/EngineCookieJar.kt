@@ -32,9 +32,10 @@ public class EngineCookie(
          * `parse()` of `engine.io-client`'s Node cookie jar, with the attribute syntax of RFC 6265
          * 5.2: the cookie-pair and every attribute end at a `;` and are trimmed, and attribute names
          * are case-insensitive. Takes the first `name=value`, strips surrounding quotes from the
-         * value and reads `Expires` and `Max-Age` (the later attribute wins, as in JavaScript).
-         * Returns `null` for input without a name. The Node jar splits on `"; "` only and reads
-         * `Expires` and `Max-Age` only in that spelling.
+         * value and reads `Expires` and `Max-Age`. A valid `Max-Age` takes precedence over
+         * `Expires` whatever their order (RFC 6265 5.3 step 3). Returns `null` for input without
+         * a name. The Node jar splits on `"; "` only, reads `Expires` and `Max-Age` only in that
+         * spelling and lets the later attribute win.
          */
         public fun parse(
             setCookie: String,
@@ -48,16 +49,24 @@ public class EngineCookie(
             var value = parts[0].substring(i + 1).trim()
             if (value.startsWith('"')) value = value.substring(1, maxOf(1, value.length - 1))
             var expires: Instant? = null
+            var maxAgeExpiry: Instant? = null
+            var hasMaxAge = false
             for (j in 1 until parts.size) {
                 val eq = parts[j].indexOf('=')
                 if (eq < 0) continue
                 val attribute = parts[j].substring(eq + 1).trim()
                 when (parts[j].substring(0, eq).trim().lowercase(Locale.ROOT)) {
                     "expires" -> expires = parseExpires(attribute)
-                    "max-age" -> expires = attribute.toLongOrNull()?.let { maxAge -> plusSecondsOrNull(now, maxAge) }
+
+                    "max-age" ->
+                        attribute.toLongOrNull()?.let { maxAge ->
+                            // The last valid Max-Age counts (RFC 6265 5.2.2, 5.3 step 3).
+                            hasMaxAge = true
+                            maxAgeExpiry = plusSecondsOrNull(now, maxAge)
+                        }
                 }
             }
-            return EngineCookie(name, value, expires)
+            return EngineCookie(name, value, if (hasMaxAge) maxAgeExpiry else expires)
         }
 
         /** `setUTCSeconds` beyond the date range gives an Invalid Date in JavaScript, which never expires. */
