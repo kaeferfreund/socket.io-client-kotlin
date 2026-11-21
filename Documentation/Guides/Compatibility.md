@@ -50,7 +50,7 @@ Durations are `Duration` instead of milliseconds.
 | `requestTimeout` | Same name (polling only) |
 | `withCredentials` | Same name; per-connection cookie jar, as the Node client, but scoped by RFC 6265 (`Domain`, `Path`, `Secure`, expiry) where the Node jar sends every cookie everywhere. Cookies that are not printable ASCII are ignored instead of failing every later request |
 | Invalid header values | A value OkHttp refuses fails the request with a transport error; JavaScript's polling transport skips such a header silently |
-| Redirects | Polling follows redirects to any origin, as Node's client does, but without what belongs to the first origin: on an origin change `Authorization` and `Proxy-Authorization` are removed, and the `Cookie` header is rebuilt per hop from the cookie jar (an explicit `Cookie` from `extraHeaders` goes to the server's host only). Node's client sends the same headers to every target. HTTPS→HTTP is never followed; with a client certificate, redirects stay within the origin, and with pins they go only to pinned hosts. Other headers follow, as in browsers. The WebSocket handshake follows none, as browsers and Node's `ws`. See [Redirects and cookies](Configuration.md#redirects-and-cookies) |
+| Redirects | Polling follows redirects to any origin, as Node's client does, but without what belongs to the first origin: on an origin change `Authorization` and `Proxy-Authorization` are removed, and the `Cookie` header is rebuilt per hop from the cookie jar (an explicit `Cookie` from `extraHeaders` goes to the server's host only). A POST body follows a 307/308 on the server's host only, and a POST is never turned into a GET. Node's client sends the same headers and body to every target. HTTPS→HTTP is never followed; with a client certificate, redirects stay within the origin, and from a pinned host they go only to pinned hosts. Other headers follow, as in browsers. The WebSocket handshake follows none, as browsers and Node's `ws`. See [Redirects and cookies](Configuration.md#redirects-and-cookies) |
 | `protocols` | Same name |
 | Reconnection backoff | Same formula and jitter; after about 1,024 failed attempts in a row the delay stays at `reconnectionDelayMax`, where JavaScript's computation degenerates to 0 ms |
 | WebSocket message size | Unlimited in browsers and Node; OkHttp sends at most 16 MiB per message. Bursts are paced below OkHttp's queue limit. Incoming messages are buffered whole by OkHttp, without a size limit (Node's `ws` defaults to 100 MiB) |
@@ -123,9 +123,11 @@ bound. A well-behaved server never notices these differences.
   client is unbounded and ignores every attribute but the expiry. Since polling
   follows redirects to other hosts, this jar scopes cookies by RFC 6265:
   host-only without `Domain`, the domain and its subdomains with it (a `Domain`
-  the host is not in, a single-label one and one on an IP address host are
-  rejected), `Secure` only over HTTPS/WSS or a loopback host (a `Secure` cookie
-  set over plain HTTP elsewhere is ignored), and no port scoping. A cookie
+  the host is not in and a single-label one are rejected; on an IP address host
+  only the address itself, as a host-only cookie; there is no public suffix
+  list), `Secure` only over HTTPS/WSS or a loopback host (a `Secure` cookie set
+  over plain HTTP elsewhere is ignored, and plain HTTP cannot replace one), and
+  no port scoping. A cookie
   replaces only the one with the same name, domain and path. When transports use
   different paths (`TransportOverrides.path`), a cookie set by one transport
   reaches another only if its `Path` matches that path as in a browser (a path

@@ -10,10 +10,16 @@ All notable changes to this project are documented here. The format follows
 
 - **Polling follows redirects to other origins, without the first origin's
   credentials.** 17.1.0 refused every polling redirect to another scheme, host
-  or port. Polling now follows them like a browser, curl and the Swift client,
-  with OkHttp's method rules (303 and, for a POST, 301/302 continue as a GET;
-  307/308 repeat the POST with its body) and at most 20 follow-ups:
-  - on an origin change, `Authorization` and `Proxy-Authorization` are removed;
+  or port. Polling GETs now follow them like a browser, curl and the Swift
+  client, with at most 20 follow-ups:
+  - a POST, whose body carries the packets (the CONNECT packet with the `auth`
+    payload among them), follows only a 307 or 308, which repeat it with its
+    body, and only on the host of the server URL (any scheme or port). A
+    redirect of a POST to another host fails the request, and so does a 300–303,
+    which would turn the POST into a body-less GET: 17.1.0 did that on the same
+    origin, losing the packets while the write reported success;
+  - on an origin change, `Authorization` and `Proxy-Authorization` are removed,
+    and a `Host` header from `extraHeaders` when the host or port changes;
   - the `Cookie` header is rebuilt for every hop: cookies of the
     `withCredentials` jar that RFC 6265 allows for the new URL, and a `Cookie`
     entry of `extraHeaders` only on the host of the server URL (any scheme or
@@ -22,8 +28,9 @@ All notable changes to this project are documented here. The format follows
   - HTTP→HTTPS is followed, HTTPS→HTTP never (also not after an HTTP→HTTPS hop);
   - with a client certificate configured through `TlsPolicy` (or
     `withKeyChainAlias`), redirects to another origin are still refused, and
-    with certificate pins, a redirect to another host is refused unless a pin
-    covers it. Both are decided before any connection to the target;
+    from a host certificate pins cover, a redirect to another host is refused
+    unless a pin covers it too. Both are decided before any connection to the
+    target;
   - other headers, such as an API key in `extraHeaders`, follow the redirect.
     Send tokens that must stay with your server as `Authorization`.
   The WebSocket handshake still follows no redirect. See
@@ -31,11 +38,17 @@ All notable changes to this project are documented here. The format follows
 - **The `withCredentials` cookie jar is scoped by RFC 6265.** Cookies stored
   from responses go back only where their `Domain` (host-only without it),
   `Path`, `Secure` flag and expiry allow; ports do not scope them. A `Domain`
-  the server's host is not part of, a single-label `Domain` and a `Domain` on an
-  IP address host reject the cookie; a `Secure` cookie is sent over HTTPS/WSS
-  only and ignored when set over plain HTTP, except on loopback hosts, which
-  count as secure as in browsers. A cookie now replaces only the one with the
-  same name, domain and path.
+  the server's host is not part of and a single-label `Domain` reject the
+  cookie; on an IP address host only `Domain` equal to that address is
+  accepted, as a host-only cookie. There is no public suffix list:
+  `Domain=co.uk` set by a host under `co.uk` is accepted. A `Secure` cookie is
+  sent over HTTPS/WSS only and ignored when set over plain HTTP, except on
+  loopback hosts, which count as secure as in browsers; a response over plain
+  HTTP cannot replace or delete a `Secure` cookie. A cookie now replaces only the
+  one with the same name, domain and path; of cookies with the same name, the
+  longer path is sent first. Hosts are compared in the form OkHttp uses (IDNA
+  ASCII, compressed IPv6), so cookies of an internationalised or IPv6 server
+  survive a redirect to the same host.
 
 Migration:
 
@@ -45,6 +58,18 @@ Migration:
   at all.
 - Move tokens from custom headers to `Authorization` if they must not reach a
   redirect target; custom `extraHeaders` follow redirects.
+- **A client certificate set directly on your OkHttp client** (an own
+  `sslSocketFactory` with a key manager) is not recognised: 17.1.0 refused every
+  redirect to another origin, now polling follows it and the target can ask for
+  the certificate. Configure it through `TlsPolicy.withClientCertificate`, or
+  turn redirects off with `followRedirects(false)`.
+- **Pins from Android's Network Security Config** are not visible to the
+  client either: with them, redirects to unpinned hosts are now followed. Declare
+  the pins in `TlsPolicy` too, or turn redirects off.
+- **An OkHttp `Authenticator`** on your client is also asked when a redirect
+  target answers 401; make it check the host before it adds credentials.
+- A server that answers a polling POST with 300–303 now gets a failed request
+  instead of a GET; answer with 307/308 or not at all.
 - A server on plain HTTP (other than `localhost`) that sets `Secure` cookies no
   longer gets them back; drop `Secure` there or serve over HTTPS. A server that
   sets `Domain` to a host its own name is not part of no longer gets the cookie.

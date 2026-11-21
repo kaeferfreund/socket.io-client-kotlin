@@ -233,7 +233,9 @@ Allow cleartext only for local development, in the debug source set
 </network-security-config>
 ```
 
-Pins can be declared here instead of in `TlsPolicy`:
+Pins can be declared here instead of in `TlsPolicy`. The client cannot see them,
+though: a polling redirect from a pinned host to an unpinned one is refused only
+for pins in `TlsPolicy` (see [Redirects and cookies](Configuration.md#redirects-and-cookies)):
 
 ```xml
 <domain-config>

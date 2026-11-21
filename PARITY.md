@@ -149,9 +149,10 @@ and do not change a certified assertion:
 - Polling follows redirects to other origins like Node's client, but on an
   origin change it drops `Authorization` and `Proxy-Authorization` and rebuilds
   the `Cookie` header from the RFC 6265-scoped cookie jar (an explicit `Cookie`
-  from `extraHeaders` only to the server's host); HTTPS→HTTP is never followed,
-  a configured client certificate keeps redirects within the origin, and pins
-  keep them on pinned hosts. The WebSocket handshake follows none. Node's
+  from `extraHeaders` only to the server's host); a POST body follows a 307/308
+  on the server's host only and a POST never becomes a GET; HTTPS→HTTP is never
+  followed, a configured client certificate keeps redirects within the origin,
+  and from a pinned host pins keep them on pinned hosts. The WebSocket handshake follows none. Node's
   polling client follows every redirect with the same headers.
 - A hostile server or URL is handled more strictly than in JavaScript: URL parsing
   (brackets, scheme case, relative paths, user info), Engine.IO upgrades, heartbeats,

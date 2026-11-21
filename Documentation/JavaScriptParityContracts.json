@@ -3843,7 +3843,7 @@
       "id": "KT-OKHTTP",
       "kind": "kotlin-extension",
       "upstream_ids": [],
-      "assertions": "The OkHttp stack sends headers and bodies, reports error statuses, bounds response bodies while reading, applies the request timeout but no read timeout (long polls wait), never follows an HTTPS-to-HTTP redirect, exchanges WebSocket frames and reports the close and a failed handshake's status, offers permessage-deflate only when compression is enabled, is discovered through ServiceLoader, and reports a dropped connection as a failure; the `okHttp { }` builder applies the base client and every `configure` block. A request or WebSocket OkHttp cannot build (a header value or URL it refuses) fails through the callback instead of throwing. Polling follows redirects with OkHttp's method rules, also to another origin, but never from HTTPS to HTTP; on a change of origin it drops Authorization and Proxy-Authorization and rebuilds Cookie by RFC 6265 cookie rules, an explicit Cookie header goes only to the first host, and other headers follow. With a client certificate configured it refuses a redirect to another origin, and with pins one to a host no pin covers, without sending anything there; the WebSocket handshake follows no redirect.",
+      "assertions": "The OkHttp stack sends headers and bodies, reports error statuses, bounds response bodies while reading, applies the request timeout but no read timeout (long polls wait), never follows an HTTPS-to-HTTP redirect, exchanges WebSocket frames and reports the close and a failed handshake's status, offers permessage-deflate only when compression is enabled, is discovered through ServiceLoader, and reports a dropped connection as a failure; the `okHttp { }` builder applies the base client and every `configure` block. A request or WebSocket OkHttp cannot build (a header value or URL it refuses) fails through the callback instead of throwing. Polling GETs follow every redirect status, also to another origin, but never from HTTPS to HTTP; a POST follows only a 307 or 308 on the host of the first request and is never turned into a GET, so its body neither reaches another host nor is lost. On a change of origin it drops Authorization and Proxy-Authorization (also when the chain returns to the first origin) and rebuilds Cookie by RFC 6265 cookie rules (domain, host-only, path, Secure, expiry from receipt, canonical hosts), an explicit Cookie header goes only to the first host, a Host header stays with its authority, and other headers follow. With a client certificate configured it refuses a redirect to another origin, and from a pinned host one to a host no pin covers (also by wildcard), without connecting there; a redirect callback that fails, and a cancelled chain, end the request. The WebSocket handshake follows no redirect.",
       "tests": [
         {
           "path": "socketio-okhttp/src/test/kotlin/io/github/kaeferfreund/socketio/okhttp/OkHttpEngineClientsTest.kt",
@@ -3899,7 +3899,7 @@
         },
         {
           "path": "socketio-okhttp/src/test/kotlin/io/github/kaeferfreund/socketio/okhttp/OkHttpEngineClientsTest.kt",
-          "symbol": "io.github.kaeferfreund.socketio.okhttp.OkHttpEngineClientsTest.followsRedirectsOnlyWithinTheOrigin"
+          "symbol": "io.github.kaeferfreund.socketio.okhttp.OkHttpEngineClientsTest.withAClientCertificateFollowsRedirectsOnlyWithinTheOrigin"
         },
         {
           "path": "socketio-okhttp/src/test/kotlin/io/github/kaeferfreund/socketio/okhttp/CrossOriginRedirectTest.kt",
@@ -3928,6 +3928,94 @@
         {
           "path": "socketio-okhttp/src/test/kotlin/io/github/kaeferfreund/socketio/okhttp/CrossOriginRedirectTest.kt",
           "symbol": "io.github.kaeferfreund.socketio.okhttp.CrossOriginRedirectTest.withPinsARedirectToAnUnpinnedHostIsRefused"
+        },
+        {
+          "path": "socketio-okhttp/src/test/kotlin/io/github/kaeferfreund/socketio/okhttp/CrossOriginRedirectTest.kt",
+          "symbol": "io.github.kaeferfreund.socketio.okhttp.CrossOriginRedirectTest.a307Or308RepeatsThePostOnlyOnTheFirstHost"
+        },
+        {
+          "path": "socketio-okhttp/src/test/kotlin/io/github/kaeferfreund/socketio/okhttp/CrossOriginRedirectTest.kt",
+          "symbol": "io.github.kaeferfreund.socketio.okhttp.CrossOriginRedirectTest.aPostIsNeverTurnedIntoAGet"
+        },
+        {
+          "path": "socketio-okhttp/src/test/kotlin/io/github/kaeferfreund/socketio/okhttp/CrossOriginRedirectTest.kt",
+          "symbol": "io.github.kaeferfreund.socketio.okhttp.CrossOriginRedirectTest.aGetFollowsEveryRedirectStatus"
+        },
+        {
+          "path": "socketio-okhttp/src/test/kotlin/io/github/kaeferfreund/socketio/okhttp/CrossOriginRedirectTest.kt",
+          "symbol": "io.github.kaeferfreund.socketio.okhttp.CrossOriginRedirectTest.authorizationDoesNotComeBackWhenTheChainReturnsToTheFirstOrigin"
+        },
+        {
+          "path": "socketio-okhttp/src/test/kotlin/io/github/kaeferfreund/socketio/okhttp/CrossOriginRedirectTest.kt",
+          "symbol": "io.github.kaeferfreund.socketio.okhttp.CrossOriginRedirectTest.anExplicitHostHeaderStaysWithItsAuthority"
+        },
+        {
+          "path": "socketio-okhttp/src/test/kotlin/io/github/kaeferfreund/socketio/okhttp/CrossOriginRedirectTest.kt",
+          "symbol": "io.github.kaeferfreund.socketio.okhttp.CrossOriginRedirectTest.aFailingRedirectCallbackFailsTheRequest"
+        },
+        {
+          "path": "socketio-okhttp/src/test/kotlin/io/github/kaeferfreund/socketio/okhttp/CrossOriginRedirectTest.kt",
+          "symbol": "io.github.kaeferfreund.socketio.okhttp.CrossOriginRedirectTest.cancellingDuringARedirectChainStopsIt"
+        },
+        {
+          "path": "socketio-okhttp/src/test/kotlin/io/github/kaeferfreund/socketio/okhttp/CrossOriginRedirectTest.kt",
+          "symbol": "io.github.kaeferfreund.socketio.okhttp.CrossOriginRedirectTest.pinsForOtherHostsDoNotRestrictAnUnpinnedServer"
+        },
+        {
+          "path": "socketio-okhttp/src/test/kotlin/io/github/kaeferfreund/socketio/okhttp/CrossOriginRedirectTest.kt",
+          "symbol": "io.github.kaeferfreund.socketio.okhttp.CrossOriginRedirectTest.engineCookiesFollowRedirectsByCookieRules"
+        },
+        {
+          "path": "socketio-okhttp/src/test/kotlin/io/github/kaeferfreund/socketio/okhttp/OkHttpEngineClientsTest.kt",
+          "symbol": "io.github.kaeferfreund.socketio.okhttp.OkHttpEngineClientsTest.followsSameOriginRedirectsWithoutLosingAPost"
+        },
+        {
+          "path": "engineio-client/src/test/kotlin/io/github/kaeferfreund/socketio/engineio/EngineCookieScopeTest.kt",
+          "symbol": "io.github.kaeferfreund.socketio.engineio.EngineCookieScopeTest.aDomainEqualToTheSettingHostReachesItsSubdomains"
+        },
+        {
+          "path": "engineio-client/src/test/kotlin/io/github/kaeferfreund/socketio/engineio/EngineCookieScopeTest.kt",
+          "symbol": "io.github.kaeferfreund.socketio.engineio.EngineCookieScopeTest.aDomainCookieReachesTheDomainAndItsSubdomains"
+        },
+        {
+          "path": "engineio-client/src/test/kotlin/io/github/kaeferfreund/socketio/engineio/EngineCookieScopeTest.kt",
+          "symbol": "io.github.kaeferfreund.socketio.engineio.EngineCookieScopeTest.aDomainAttributeThatDoesNotMatchTheHostRejectsTheCookie"
+        },
+        {
+          "path": "engineio-client/src/test/kotlin/io/github/kaeferfreund/socketio/engineio/EngineCookieScopeTest.kt",
+          "symbol": "io.github.kaeferfreund.socketio.engineio.EngineCookieScopeTest.pathsMatchOnASlashBoundaryOfTheEncodedPath"
+        },
+        {
+          "path": "engineio-client/src/test/kotlin/io/github/kaeferfreund/socketio/engineio/EngineCookieScopeTest.kt",
+          "symbol": "io.github.kaeferfreund.socketio.engineio.EngineCookieScopeTest.aSecureCookieIsSentOnlyOverTls"
+        },
+        {
+          "path": "engineio-client/src/test/kotlin/io/github/kaeferfreund/socketio/engineio/EngineCookieScopeTest.kt",
+          "symbol": "io.github.kaeferfreund.socketio.engineio.EngineCookieScopeTest.plainHttpCannotReplaceOrDeleteASecureCookie"
+        },
+        {
+          "path": "engineio-client/src/test/kotlin/io/github/kaeferfreund/socketio/engineio/EngineCookieScopeTest.kt",
+          "symbol": "io.github.kaeferfreund.socketio.engineio.EngineCookieScopeTest.hostsCompareInTheirCanonicalForm"
+        },
+        {
+          "path": "engineio-client/src/test/kotlin/io/github/kaeferfreund/socketio/engineio/EngineCookieScopeTest.kt",
+          "symbol": "io.github.kaeferfreund.socketio.engineio.EngineCookieScopeTest.cookiesOfTheSameNameAreSentLongerPathFirst"
+        },
+        {
+          "path": "engineio-client/src/test/kotlin/io/github/kaeferfreund/socketio/engineio/EngineRedirectCookiesTest.kt",
+          "symbol": "io.github.kaeferfreund.socketio.engineio.EngineRedirectCookiesTest.aRedirectGetsTheCookiesThatMatchItsTarget"
+        },
+        {
+          "path": "engineio-client/src/test/kotlin/io/github/kaeferfreund/socketio/engineio/EngineRedirectCookiesTest.kt",
+          "symbol": "io.github.kaeferfreund.socketio.engineio.EngineRedirectCookiesTest.cookiesSetByARedirectResponseApplyToTheNextHopAndReachTheJar"
+        },
+        {
+          "path": "engineio-client/src/test/kotlin/io/github/kaeferfreund/socketio/engineio/EngineRedirectCookiesTest.kt",
+          "symbol": "io.github.kaeferfreund.socketio.engineio.EngineRedirectCookiesTest.aRedirectCookieExpiresCountedFromItsArrival"
+        },
+        {
+          "path": "engineio-client/src/test/kotlin/io/github/kaeferfreund/socketio/engineio/EngineRedirectCookiesTest.kt",
+          "symbol": "io.github.kaeferfreund.socketio.engineio.EngineRedirectCookiesTest.aSameHostRedirectKeepsTheCookiesWhateverSpellingTheHostHas"
         },
         {
           "path": "socketio-okhttp/src/test/kotlin/io/github/kaeferfreund/socketio/okhttp/OkHttpEngineClientsTest.kt",
