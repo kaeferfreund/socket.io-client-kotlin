@@ -2,19 +2,19 @@
   "jvm_all_suites": {
     "total": {
       "line": {
-        "covered": 3397,
-        "total": 3484,
-        "percent": 97.5
+        "covered": 3694,
+        "total": 3795,
+        "percent": 97.3
       },
       "branch": {
-        "covered": 2365,
-        "total": 2822,
-        "percent": 83.8
+        "covered": 2756,
+        "total": 3263,
+        "percent": 84.5
       },
       "method": {
-        "covered": 833,
-        "total": 892,
-        "percent": 93.4
+        "covered": 869,
+        "total": 939,
+        "percent": 92.5
       }
     },
     "packages": {
@@ -37,19 +37,19 @@
       },
       "io.github.kaeferfreund.socketio.okhttp": {
         "line": {
-          "covered": 209,
-          "total": 225,
-          "percent": 92.9
+          "covered": 247,
+          "total": 271,
+          "percent": 91.1
         },
         "branch": {
-          "covered": 126,
-          "total": 156,
-          "percent": 80.8
+          "covered": 169,
+          "total": 198,
+          "percent": 85.4
         },
         "method": {
-          "covered": 67,
-          "total": 80,
-          "percent": 83.8
+          "covered": 72,
+          "total": 92,
+          "percent": 78.3
         }
       },
       "io.github.kaeferfreund.socketio.engineio.parser": {
@@ -76,9 +76,9 @@
           "percent": 98.4
         },
         "branch": {
-          "covered": 727,
+          "covered": 726,
           "total": 897,
-          "percent": 81.0
+          "percent": 80.9
         },
         "method": {
           "covered": 304,
@@ -105,19 +105,19 @@
       },
       "io.github.kaeferfreund.socketio.engineio": {
         "line": {
-          "covered": 985,
-          "total": 1009,
+          "covered": 1244,
+          "total": 1274,
           "percent": 97.6
         },
         "branch": {
-          "covered": 567,
-          "total": 695,
-          "percent": 81.6
+          "covered": 916,
+          "total": 1094,
+          "percent": 83.7
         },
         "method": {
-          "covered": 253,
-          "total": 267,
-          "percent": 94.8
+          "covered": 284,
+          "total": 302,
+          "percent": 94.0
         }
       }
     }

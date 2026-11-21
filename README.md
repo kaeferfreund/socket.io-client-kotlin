@@ -203,7 +203,7 @@ parity, and emulator runs do not replace field tests on physical devices.
 ### Coverage
 
 Numbers from the validators and coverage reports of CI run
-[44807386514](https://github.com/kaeferfreund/socket.io-client-kotlin/actions/runs/44807386514),
+[44910947461](https://github.com/kaeferfreund/socket.io-client-kotlin/actions/runs/44910947461),
 recorded in [Documentation/ReviewEvidence](Documentation/ReviewEvidence/README.md);
 CI regenerates them on every run.
 
@@ -211,7 +211,7 @@ CI regenerates them on every run.
 
 | Scope | Lines | Branches | Methods |
 | --- | ---: | ---: | ---: |
-| JVM modules, every JVM suite including end-to-end | 97.5&nbsp;% (3 397/3 484) | 83.8&nbsp;% (2 365/2 822) | 93.4&nbsp;% (833/892) |
+| JVM modules, every JVM suite including end-to-end | 97.3&nbsp;% (3 694/3 795) | 84.5&nbsp;% (2 756/3 263) | 92.5&nbsp;% (869/939) |
 | `socketio-android` under Robolectric | 92.1&nbsp;% (281/305) | 74.7&nbsp;% (124/166) | 87.1&nbsp;% (81/93) |
 
 The Android numbers leave out the emulator tests, which Kover cannot measure. Most
