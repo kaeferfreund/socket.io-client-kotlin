@@ -241,10 +241,31 @@ public abstract class EngineTransport(
      */
     internal val cookieUrl: String get() = createUri(if (options.secure) "https" else "http", emptyMap())
 
-    /** Header list with the configured extra headers and the cookies of the jar that match [cookieUrl]. */
+    /**
+     * The `Cookie` entries of the configured extra headers as one value (RFC 6265 5.4 allows one
+     * `Cookie` header), or `null` without one.
+     */
+    internal val explicitCookie: String?
+        get() = options.extraHeaders.filterKeys { it.equals("cookie", ignoreCase = true) }.values.takeIf { it.isNotEmpty() }?.joinToString("; ")
+
+    /**
+     * Header list with the configured extra headers and one `Cookie` header. A `Cookie` from the
+     * extra headers is the whole `Cookie` header on the configured host, so the jar adds nothing
+     * then (deliberate difference from JavaScript, whose Node jar replaces it); otherwise the jar's
+     * cookies that match [cookieUrl].
+     */
     protected fun requestHeaders(): MutableList<Pair<String, String>> {
-        val headers = options.extraHeaders.entries.mapTo(ArrayList()) { it.key to it.value }
-        options.cookieJar?.cookieHeader(cookieUrl)?.let { headers.add("cookie" to it) }
+        val explicit = explicitCookie
+        val headers = ArrayList<Pair<String, String>>()
+        for ((name, value) in options.extraHeaders) {
+            val isCookie = name.equals("cookie", ignoreCase = true)
+            if (!isCookie) {
+                headers += name to value
+            } else if (headers.none { it.first.equals("cookie", ignoreCase = true) }) {
+                headers += name to (explicit ?: value)
+            }
+        }
+        if (explicit == null) options.cookieJar?.cookieHeader(cookieUrl)?.let { headers.add("cookie" to it) }
         return headers
     }
 

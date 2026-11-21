@@ -244,10 +244,9 @@ public class PollingTransport(
         val url = uri()
         val jar = options.cookieJar
         // Deliberate difference from JavaScript, whose Node client sends the same headers to every
-        // redirect target: the HTTP client rebuilds the cookies of each redirect from a copy of the
-        // jar by RFC 6265 rules (see EngineRedirectCookies).
-        val explicitCookies = options.extraHeaders.filterKeys { it.equals("cookie", ignoreCase = true) }.values.toList()
-        val redirectCookies = RequestCookies(url, explicitCookies, jar?.copy())
+        // redirect target: the HTTP client rebuilds the cookies of each redirect from the live jar by
+        // RFC 6265 rules (see EngineRedirectCookies).
+        val redirectCookies = RequestCookies(url, explicitCookie, jar)
         val request =
             EngineHttpRequest(
                 method = method,
@@ -261,12 +260,10 @@ public class PollingTransport(
         val callback =
             object : EngineHttpCallback {
                 override fun onResponse(response: EngineHttpResponse) {
+                    // Stored the moment the response arrives (the jar is thread-safe), for the URL that
+                    // sent it: the last redirect target. Redirect responses stored theirs on the way.
+                    jar?.parseCookies(response.headerValues("set-cookie"), redirectCookies.finalUrl)
                     executor.execute {
-                        if (jar != null) {
-                            // What redirect responses set, then the final response, which came from the last target.
-                            redirectCookies.applyTo(jar)
-                            jar.parseCookies(response.headerValues("set-cookie"), redirectCookies.finalUrl)
-                        }
                         // 1223 is IE's mangled 204; kept for fidelity with the JavaScript check.
                         if (response.status == 200 || response.status == 1223) {
                             onResult(Result.success(response.body))

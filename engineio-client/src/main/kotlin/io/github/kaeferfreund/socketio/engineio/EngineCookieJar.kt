@@ -1,9 +1,5 @@
 package io.github.kaeferfreund.socketio.engineio
 
-import java.net.IDN
-import java.net.Inet4Address
-import java.net.InetAddress
-import java.net.UnknownHostException
 import java.time.Instant
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
@@ -33,16 +29,18 @@ public class EngineCookie(
             )
 
         /**
-         * `parse()` of `engine.io-client`'s Node cookie jar: splits on `"; "`,
-         * takes the first `name=value`, strips surrounding quotes from the
-         * value and reads `Expires` and `Max-Age` (the later attribute wins).
-         * Returns `null` for input without a name.
+         * `parse()` of `engine.io-client`'s Node cookie jar, with the attribute syntax of RFC 6265
+         * 5.2: the cookie-pair and every attribute end at a `;` and are trimmed, and attribute names
+         * are case-insensitive. Takes the first `name=value`, strips surrounding quotes from the
+         * value and reads `Expires` and `Max-Age` (the later attribute wins, as in JavaScript).
+         * Returns `null` for input without a name. The Node jar splits on `"; "` only and reads
+         * `Expires` and `Max-Age` only in that spelling.
          */
         public fun parse(
             setCookie: String,
             now: Instant = Instant.now(),
         ): EngineCookie? {
-            val parts = setCookie.split("; ")
+            val parts = setCookie.split(';')
             val i = parts[0].indexOf('=')
             if (i == -1) return null
             val name = parts[0].substring(0, i).trim()
@@ -51,12 +49,12 @@ public class EngineCookie(
             if (value.startsWith('"')) value = value.substring(1, maxOf(1, value.length - 1))
             var expires: Instant? = null
             for (j in 1 until parts.size) {
-                val sub = parts[j].split("=")
-                if (sub.size != 2) continue
-                val attribute = sub[1].trim()
-                when (sub[0].trim()) {
-                    "Expires" -> expires = parseExpires(attribute)
-                    "Max-Age" -> expires = attribute.toLongOrNull()?.let { maxAge -> plusSecondsOrNull(now, maxAge) }
+                val eq = parts[j].indexOf('=')
+                if (eq < 0) continue
+                val attribute = parts[j].substring(eq + 1).trim()
+                when (parts[j].substring(0, eq).trim().lowercase(Locale.ROOT)) {
+                    "expires" -> expires = parseExpires(attribute)
+                    "max-age" -> expires = attribute.toLongOrNull()?.let { maxAge -> plusSecondsOrNull(now, maxAge) }
                 }
             }
             return EngineCookie(name, value, expires)
@@ -90,49 +88,79 @@ public class EngineCookie(
 }
 
 /**
- * The per-connection cookie jar `engine.io-client` creates when
- * `withCredentials` is enabled outside a browser. Cookies from every
- * `Set-Cookie` response header are replayed on later polling requests and on
- * the WebSocket handshake of the same engine. Used on the protocol executor; a polling
- * request gets its own [copy], which the HTTP client's thread updates during redirects.
- *
- * Unlike the unbounded JavaScript jar, it keeps the limits browsers apply to
- * one site: at most 180 cookies (the oldest makes room for a new one) and at
- * most 4096 bytes of name and value per cookie (a larger one is ignored).
- *
- * The JavaScript jar ignores every attribute but the expiry, which is safe only
- * while all requests go to one server. Polling follows redirects to other origins,
- * so cookies the engine stores are scoped like in a browser (RFC 6265):
- * - by host: a cookie without `Domain` goes back to the host that set it only; with
- *   `Domain` (a leading dot is ignored) to that domain and its subdomains. A `Domain`
- *   the host does not belong to rejects the cookie, and so does one of a single label
- *   (`Domain=com`), a minimal public-suffix guard: there is no public suffix list, so
- *   `Domain=co.uk` set by a host under `co.uk` is accepted. Such a single label, or an
- *   IP address, equal to the host makes a host-only cookie. IP addresses never match a
- *   suffix. Hosts are compared in their canonical form (IDNA ASCII, compressed IPv6), as
- *   OkHttp writes them. Ports do not scope cookies;
- * - by path: when transports use different paths (`TransportOverrides.path`), a cookie
- *   set by one transport reaches another only if its `Path` matches that transport's
- *   path, compared on `/` boundaries of the percent-encoded path. On the host and path
- *   that set it, a cookie is always replayed, as in JavaScript. Transports scope cookies
- *   with the absolute path they request, also when the configured path is relative;
- * - by `Secure`: such a cookie is sent only over `https`/`wss`, and one set over plain
- *   `http` is ignored (RFC 6265bis). Loopback hosts (`localhost`, `127.0.0.0/8`, `::1`)
- *   count as secure, as in browsers. A response over plain `http` neither replaces nor
- *   deletes a `Secure` cookie of the same name whose domain and path overlap its own.
- *
- * A cookie replaces the one with the same name, domain and path. Of several cookies with the
- * same name, the one with the longer path is sent first (RFC 6265 5.4).
+ * Tells the cookie jar which cookie domains are public suffixes (`com`, `co.uk`, `github.io`):
+ * names under which anyone can register a domain, so no cookie may name one as its `Domain`.
+ * `socketio-okhttp` answers from OkHttp's copy of the public suffix list; see
+ * [EngineClients.publicSuffixes].
  */
-public class EngineCookieJar(
-    private val clock: () -> Instant = Instant::now,
+public fun interface EnginePublicSuffixes {
+    /** Whether [domain] (lowercase IDNA ASCII, without a trailing dot) is a public suffix. */
+    public fun isPublicSuffix(domain: String): Boolean
+}
+
+/**
+ * The per-connection cookie jar `engine.io-client` creates when `withCredentials` is enabled
+ * outside a browser. Cookies from every `Set-Cookie` response header are replayed on later
+ * polling requests and on the WebSocket handshake of the same engine.
+ *
+ * The JavaScript jar is unbounded and ignores every attribute but the expiry, which is safe only
+ * while all requests go to one server. Polling follows redirects to other origins, so this jar
+ * follows RFC 6265 (and RFC 6265bis where noted) instead of the Node jar for the cookies the
+ * engine stores:
+ * - **Domain.** Without `Domain` a cookie goes back only to the host that set it (host-only);
+ *   with it (a leading dot is ignored) to that domain and its subdomains. A `Domain` the host
+ *   does not belong to rejects the cookie, and so does a public suffix ([EnginePublicSuffixes];
+ *   without one, only single labels such as `com` count): equal to the host, either makes a
+ *   host-only cookie instead. On an IP address host only `Domain` equal to that address is
+ *   accepted, also host-only, and IP addresses never match a suffix. Hosts are compared in
+ *   canonical form: IDNA ASCII, lowercase, no trailing dot, IPv4 as four decimal octets
+ *   (`127.1` is `127.0.0.1`), IPv6 compressed. Ports do not scope cookies.
+ * - **Path.** A cookie goes only to request paths its `Path` path-matches on a `/` boundary of the
+ *   percent-encoded path; without `Path`, the directory of the path that set it. There is no
+ *   exception for the URL that set it. Transports scope cookies with the absolute path they
+ *   request, also when the configured path is relative.
+ * - **Secure.** Such a cookie goes only to secure contexts: `https`/`wss`, and the loopback hosts
+ *   `localhost`, `127.0.0.0/8` and `::1`, as in browsers. One set from elsewhere is ignored, and a
+ *   response from a non-secure context neither replaces nor deletes a live `Secure` cookie it
+ *   would shadow (RFC 6265bis).
+ * - **Prefixes** (RFC 6265bis, compared case-insensitively). A `__Secure-` cookie needs `Secure`;
+ *   a `__Host-` cookie needs `Secure`, no `Domain` and `Path=/`. Others are ignored.
+ * - **Identity and order.** A cookie replaces the one with the same name, domain, host-only flag
+ *   and path (RFC 6265bis): a `Domain` cookie never replaces a host-only one, nor the other way
+ *   round. The `Cookie` header lists longer paths first, and cookies of equal path length in the
+ *   order they were created; a replaced cookie keeps its place (RFC 6265 5.4).
+ *
+ * Unlike the JavaScript jar it also keeps the limits browsers apply: at most 4096 bytes of name
+ * and value per cookie (a larger one is ignored), at most 180 cookies per cookie domain and 3000
+ * in all. When a domain is full, an expired cookie and then the oldest cookie of that domain make
+ * room; when the jar is full, the oldest cookie of the domain holding the most. So one host cannot
+ * evict the cookies of another.
+ *
+ * Thread-safe: HTTP client threads store and read cookies while they follow a polling request's
+ * redirects (see [EngineRedirectCookies]), so each response's cookies are stored the moment it
+ * arrives and each hop reads the current cookies. Every method holds the jar's own lock, which is
+ * never held while calling out of the jar.
+ */
+public class EngineCookieJar internal constructor(
+    private val clock: () -> Instant,
+    private val publicSuffixes: EnginePublicSuffixes?,
 ) {
+    /** A jar without a public suffix list, which refuses only single-label cookie domains. */
+    @JvmOverloads
+    public constructor(clock: () -> Instant = Instant::now) : this(clock, null)
+
     /** A stored cookie and its scope; `null` scopes (the JavaScript API) match every request. */
     private class Entry(
         val cookie: EngineCookie,
         val scope: CookieScope?,
-    )
+    ) {
+        /** The cookie domain the per-domain limit counts it for; unscoped cookies share one. */
+        val limitDomain: String get() = scope?.domain.orEmpty()
+    }
 
+    private val lock = Any()
+
+    /** In creation order: a replaced cookie keeps its place. Guarded by [lock]. */
     private val cookies = LinkedHashMap<String, Entry>()
 
     /**
@@ -147,38 +175,31 @@ public class EngineCookieJar(
      * Cookies stored here are not scoped, as in JavaScript: they go with every
      * request of the engine, and on a redirect only to the host of the first request.
      */
-    public fun parseCookies(setCookieHeaders: List<String>): Unit = store(setCookieHeaders, null)
+    public fun parseCookies(setCookieHeaders: List<String>): Unit = synchronized(lock) { store(setCookieHeaders, null) }
 
-    /**
-     * [parseCookies] for a response to [requestUrl], which scopes the cookies; nothing is stored for
-     * a URL without a host. `Max-Age` counts from [receivedAt], when the response arrived.
-     */
+    /** [parseCookies] for a response to [requestUrl], which scopes the cookies; nothing is stored for a URL without a host. */
     internal fun parseCookies(
         setCookieHeaders: List<String>,
         requestUrl: String,
-        receivedAt: Instant? = null,
     ) {
+        if (setCookieHeaders.isEmpty()) return
         val url = CookieUrl.parse(requestUrl) ?: return
-        store(setCookieHeaders, url, receivedAt)
+        synchronized(lock) { store(setCookieHeaders, url) }
     }
-
-    /** The jar's clock, to record when a response arrived. */
-    internal fun now(): Instant = clock()
 
     private fun store(
         setCookieHeaders: List<String>,
         url: CookieUrl?,
-        receivedAt: Instant? = null,
     ) {
         for (header in setCookieHeaders) {
-            val now = receivedAt ?: clock()
+            val now = clock()
             val cookie = EngineCookie.parse(header, now) ?: continue
             if (!cookie.name.isPrintableAscii() || !cookie.value.isPrintableAscii()) continue
             // Printable ASCII: one byte per character.
             if (cookie.name.length + cookie.value.length > CookieLimits.MAX_COOKIE_BYTES) continue
-            val scope = if (url == null) null else CookieScope.of(header, url) ?: continue
-            // RFC 6265bis 5.7: plain HTTP cannot replace or delete a Secure cookie that overlaps.
-            if (url != null && scope != null && !url.secure && shadowsSecureCookie(cookie.name, scope)) continue
+            val scope = if (url == null) null else CookieScope.of(header, cookie.name, url, publicSuffixes) ?: continue
+            // RFC 6265bis 5.7: a non-secure response cannot replace or delete a live Secure cookie it shadows.
+            if (url != null && scope != null && !url.secure && shadowsSecureCookie(cookie.name, scope, now)) continue
             val key = scope?.key(cookie.name) ?: cookie.name
             // A cookie that arrives expired (`Max-Age=0`, a past `Expires`) only deletes its
             // namesake, as in a browser; stored, it could make a full jar evict a live cookie.
@@ -186,7 +207,7 @@ public class EngineCookieJar(
                 cookies.remove(key)
                 continue
             }
-            if (key !in cookies && cookies.size >= CookieLimits.MAX_COOKIES) makeRoom()
+            if (key !in cookies) makeRoom(scope?.domain.orEmpty())
             cookies[key] = Entry(cookie, scope)
         }
     }
@@ -194,15 +215,35 @@ public class EngineCookieJar(
     private fun shadowsSecureCookie(
         name: String,
         scope: CookieScope,
+        now: Instant,
     ): Boolean =
         cookies.values.any { entry ->
             val existing = entry.scope
-            existing != null && existing.secure && entry.cookie.name == name && existing.overlaps(scope)
+            existing != null &&
+                existing.secure &&
+                entry.cookie.name == name &&
+                entry.cookie.expires?.isAfter(now) != false &&
+                scope.shadows(existing)
         }
 
-    private fun makeRoom() {
-        removeExpired()
-        if (cookies.size >= CookieLimits.MAX_COOKIES) cookies.remove(cookies.keys.first())
+    /** Frees a place for a new cookie of [domain]; see the class documentation. */
+    private fun makeRoom(domain: String) {
+        if (count(domain) >= CookieLimits.MAX_COOKIES_PER_DOMAIN) {
+            removeExpired()
+            if (count(domain) >= CookieLimits.MAX_COOKIES_PER_DOMAIN) removeOldest(domain)
+        }
+        if (cookies.size >= CookieLimits.MAX_COOKIES) {
+            removeExpired()
+            if (cookies.size >= CookieLimits.MAX_COOKIES) {
+                removeOldest(cookies.values.groupingBy { it.limitDomain }.eachCount().maxBy { it.value }.key)
+            }
+        }
+    }
+
+    private fun count(domain: String): Int = cookies.values.count { it.limitDomain == domain }
+
+    private fun removeOldest(domain: String) {
+        cookies.remove(cookies.entries.first { it.value.limitDomain == domain }.key)
     }
 
     private fun removeExpired() {
@@ -214,10 +255,11 @@ public class EngineCookieJar(
 
     /** The unexpired cookies, dropping expired ones. */
     public val current: List<EngineCookie>
-        get() {
-            removeExpired()
-            return cookies.values.map { it.cookie }
-        }
+        get() =
+            synchronized(lock) {
+                removeExpired()
+                cookies.values.map { it.cookie }
+            }
 
     /** The `Cookie` request header value, or `null` when the jar is empty. */
     public fun cookieHeader(): String? = header(current)
@@ -231,26 +273,22 @@ public class EngineCookieJar(
         unscopedHost: String? = null,
     ): String? {
         val url = CookieUrl.parse(requestUrl) ?: return null
-        removeExpired()
-        val matching = cookies.values.filter { entry -> entry.scope?.matches(url) ?: (unscopedHost == null || unscopedHost == url.host) }
-        // RFC 6265 5.4: of cookies with the same name, the longer path goes first, since servers
-        // read the first; otherwise the order of creation, as in JavaScript.
-        val ordered =
-            matching.groupBy { it.cookie.name }.values.flatMap { sameName ->
-                if (sameName.size == 1) sameName else sameName.sortedByDescending { entry -> entry.scope?.path?.length ?: 0 }
+        val matching =
+            synchronized(lock) {
+                removeExpired()
+                cookies.values.filter { entry -> entry.scope?.matches(url) ?: (unscopedHost == null || unscopedHost == url.host) }
             }
-        return header(ordered.map { it.cookie })
+        // RFC 6265 5.4 step 2: longer paths first, equal lengths in creation order (a stable sort of
+        // the jar's order). Unscoped cookies, which match every path, count as `Path=/`.
+        return header(matching.sortedByDescending { it.scope?.path?.length ?: 1 }.map { it.cookie })
     }
-
-    /** A copy of the stored cookies, for a request that applies them on another thread. */
-    internal fun copy(): EngineCookieJar = EngineCookieJar(clock).also { it.cookies.putAll(cookies) }
 
     private fun header(cookies: List<EngineCookie>): String? = cookies.takeIf { it.isNotEmpty() }?.joinToString("; ") { "${it.name}=${it.value}" }
 }
 
 /** The parts of a request URL cookies are scoped by. */
 internal class CookieUrl private constructor(
-    /** Normalized: canonical (IDNA ASCII, compressed IPv6), lowercase, without IPv6 brackets or a trailing dot. */
+    /** In [EngineHosts.canonical] form. */
     val host: String,
     /** The percent-encoded path, `/` when empty. */
     val path: String,
@@ -258,193 +296,150 @@ internal class CookieUrl private constructor(
     val secure: Boolean,
 ) {
     companion object {
-        /** Splits `scheme://[userinfo@]host[:port][path][?query][#fragment]`; `null` without a scheme or host. */
+        /** Splits `scheme://[userinfo@]host[:port][path][?query][#fragment]`; `null` without a scheme or a valid host. */
         fun parse(url: String): CookieUrl? {
             val schemeEnd = url.indexOf("://")
             if (schemeEnd <= 0) return null
-            val scheme = url.substring(0, schemeEnd).lowercase()
+            val scheme = url.substring(0, schemeEnd).lowercase(Locale.ROOT)
             val authorityStart = schemeEnd + 3
             val authorityEnd = url.indexOfAny(charArrayOf('/', '?', '#'), authorityStart).let { if (it < 0) url.length else it }
             val authority = url.substring(authorityStart, authorityEnd).substringAfterLast('@')
             val rawHost =
                 if (authority.startsWith('[')) {
-                    authority.substringBefore(']') + "]"
+                    // An IPv6 literal: a `[` without its `]`, or anything but a port after it, is no host.
+                    val close = authority.indexOf(']')
+                    if (close < 0 || (close + 1 < authority.length && authority[close + 1] != ':')) return null
+                    authority.substring(0, close + 1)
                 } else {
                     authority.substringBefore(':')
                 }
-            val host = normalizeHost(rawHost) ?: return null
+            val host = EngineHosts.canonical(rawHost) ?: return null
             val pathEnd = url.indexOfAny(charArrayOf('?', '#'), authorityEnd).let { if (it < 0) url.length else it }
             val path = url.substring(authorityEnd, pathEnd).takeIf { it.startsWith('/') } ?: "/"
-            return CookieUrl(host, path, scheme == "https" || scheme == "wss" || isLoopback(host))
+            return CookieUrl(host, path, scheme == "https" || scheme == "wss" || EngineHosts.isLoopback(host))
         }
-
-        /**
-         * The host as OkHttp writes it in a URL, so hosts from the engine's URLs and from
-         * redirect URLs compare equal: IDNA ASCII (`bücher.example` → `xn--bcher-kva.example`),
-         * IPv6 compressed (RFC 5952), lowercase, without brackets or a trailing root dot;
-         * `null` when empty or not a valid host.
-         */
-        fun normalizeHost(host: String): String? {
-            var result = host
-            if (result.startsWith('[') && result.endsWith(']')) result = result.substring(1, result.length - 1)
-            if (':' in result) return canonicalIpv6(result)
-            if (result.any { it.code > 0x7f }) {
-                result =
-                    try {
-                        IDN.toASCII(result, IDN.ALLOW_UNASSIGNED)
-                    } catch (e: IllegalArgumentException) {
-                        return null
-                    }
-            }
-            result = result.lowercase(Locale.ROOT)
-            if (result.length > 1 && result.endsWith('.')) result = result.dropLast(1)
-            return result.takeIf { it.isNotEmpty() && it != "." }
-        }
-
-        /** An IPv6 literal in RFC 5952 form; an IPv4-mapped one as its IPv4 address, as OkHttp does. */
-        private fun canonicalIpv6(literal: String): String? {
-            // Only a literal: InetAddress resolves anything else through DNS.
-            if (literal.isEmpty() || !literal.all { it in IPV6_LITERAL_CHARS }) return null
-            val address =
-                try {
-                    InetAddress.getByName(literal)
-                } catch (e: UnknownHostException) {
-                    return null
-                }
-            if (address is Inet4Address) return address.hostAddress
-            val bytes = address.address
-            val groups = IntArray(8) { ((bytes[it * 2].toInt() and 0xff) shl 8) or (bytes[it * 2 + 1].toInt() and 0xff) }
-            // The first longest run of at least two zero groups becomes `::`.
-            var runStart = -1
-            var runLength = 0
-            var i = 0
-            while (i < 8) {
-                if (groups[i] != 0) {
-                    i++
-                    continue
-                }
-                val start = i
-                while (i < 8 && groups[i] == 0) i++
-                if (i - start > runLength && i - start >= 2) {
-                    runStart = start
-                    runLength = i - start
-                }
-            }
-            val result = StringBuilder()
-            i = 0
-            while (i < 8) {
-                if (i == runStart) {
-                    result.append("::")
-                    i += runLength
-                    continue
-                }
-                if (result.isNotEmpty() && !result.endsWith(":")) result.append(':')
-                result.append(Integer.toHexString(groups[i]))
-                i++
-            }
-            return result.toString()
-        }
-
-        /**
-         * RFC 6265 5.1.3: an IP address only matches itself, never a domain suffix. A host whose
-         * last label is a number is an IPv4 address in the WHATWG URL standard (`1.2.3`, `0x7f.1`).
-         */
-        fun isIpAddress(host: String): Boolean {
-            if (':' in host) return true
-            val last = host.substringAfterLast('.')
-            if (last.isEmpty()) return false
-            if (last.startsWith("0x", ignoreCase = true)) return last.drop(2).all { it in HEX_DIGITS }
-            return last.all { it in '0'..'9' }
-        }
-
-        private const val HEX_DIGITS = "0123456789abcdefABCDEF"
-        private const val IPV6_LITERAL_CHARS = "$HEX_DIGITS:."
-
-        private fun isLoopback(host: String): Boolean =
-            host == "localhost" || host.endsWith(".localhost") || host == "::1" || (isIpAddress(host) && host.startsWith("127."))
     }
 }
 
-/** Where a stored cookie may be sent (RFC 6265 5.3), and where it was set. */
+/** Where a stored cookie may be sent (RFC 6265 5.3). */
 private class CookieScope(
     /** The host (host-only) or domain the cookie belongs to. */
     val domain: String,
     val hostOnly: Boolean,
     val path: String,
     val secure: Boolean,
-    private val setterHost: String,
-    private val setterPath: String,
 ) {
-    /** RFC 6265 5.3 step 11: name, domain and path identify a cookie. */
-    fun key(name: String): String = "$name;$domain;$path"
+    /** RFC 6265bis 5.7: name, domain, host-only flag and path identify a stored cookie. */
+    fun key(name: String): String = "$name;$domain;$hostOnly;$path"
 
-    /** RFC 6265bis 5.7 step 16: either domain matches the other, and either path the other. */
-    fun overlaps(other: CookieScope): Boolean =
-        (domainMatches(domain, other.domain) || domainMatches(other.domain, domain)) &&
-            (pathMatches(path, other.path) || pathMatches(other.path, path))
+    /**
+     * RFC 6265bis 5.7, for a cookie set from a non-secure context: whether this new cookie would
+     * shadow the [existing] Secure cookie of its name, because either cookie's domain
+     * domain-matches the other's and this cookie's path path-matches the existing cookie's path.
+     */
+    fun shadows(existing: CookieScope): Boolean =
+        (domainMatches(domain, existing.domain) || domainMatches(existing.domain, domain)) && pathMatches(path, existing.path)
 
+    /** RFC 6265 5.4 step 1: host (host-only or domain-match), path-match and `Secure`. */
     fun matches(url: CookieUrl): Boolean {
         if (secure && !url.secure) return false
         val hostMatches = if (hostOnly) url.host == domain else domainMatches(url.host, domain)
-        if (!hostMatches) return false
-        // JavaScript ignores Path, so a cookie is always replayed where it was set.
-        return (url.host == setterHost && url.path == setterPath) || pathMatches(url.path, path)
+        return hostMatches && pathMatches(url.path, path)
     }
 
     companion object {
-        /** The scope of [setCookie] received for [url], or `null` when the cookie must be ignored. */
+        /** The scope of the cookie [name] in [setCookie] received for [url], or `null` when the cookie must be ignored. */
         fun of(
             setCookie: String,
+            name: String,
             url: CookieUrl,
+            publicSuffixes: EnginePublicSuffixes?,
         ): CookieScope? {
             var domainAttribute: String? = null
             var pathAttribute: String? = null
             var secure = false
-            // RFC 6265 5.2: attributes split on `;` with optional whitespace; the last of a name wins.
+            // RFC 6265 5.2: attributes end at `;` and are trimmed, names are case-insensitive, and
+            // the last attribute of a name wins.
             for (attribute in setCookie.split(';').drop(1)) {
                 val i = attribute.indexOf('=')
-                val name = (if (i < 0) attribute else attribute.substring(0, i)).trim()
+                val attributeName = (if (i < 0) attribute else attribute.substring(0, i)).trim()
                 val value = if (i < 0) "" else attribute.substring(i + 1).trim()
                 when {
-                    name.equals("Domain", ignoreCase = true) -> domainAttribute = value
-                    name.equals("Path", ignoreCase = true) -> pathAttribute = value
-                    name.equals("Secure", ignoreCase = true) -> secure = true
+                    // RFC 6265 5.2.3: an empty Domain is ignored; a leading dot is removed.
+                    attributeName.equals("Domain", ignoreCase = true) -> if (value.isNotEmpty()) domainAttribute = value.removePrefix(".")
+
+                    attributeName.equals("Path", ignoreCase = true) -> pathAttribute = value
+
+                    attributeName.equals("Secure", ignoreCase = true) -> secure = true
                 }
             }
-            // RFC 6265bis 5.7: a Secure cookie from an insecure origin is ignored.
+            // RFC 6265bis 5.7: a Secure cookie from a non-secure context is ignored.
             if (secure && !url.secure) return null
-            // RFC 6265 5.2.3: an empty Domain attribute is ignored, a leading dot removed.
-            val rawDomain = domainAttribute?.removePrefix(".")
+            if (!prefixAllows(name, secure, domainAttribute, pathAttribute)) return null
             val domain: String
             val hostOnly: Boolean
+            val rawDomain = domainAttribute
             if (rawDomain.isNullOrEmpty()) {
                 domain = url.host
                 hostOnly = true
             } else {
                 // A Domain that is not a host name (`..`, `[]`) rejects the cookie.
-                domain = CookieUrl.normalizeHost(rawDomain) ?: return null
-                // An IP address or a single label (`com`, `localhost`) is never a cookie domain;
-                // equal to the host, it makes a host-only cookie (RFC 6265 5.3 steps 5 and 6).
-                val invalidDomain = CookieUrl.isIpAddress(url.host) || CookieUrl.isIpAddress(domain) || '.' !in domain
-                if (invalidDomain && domain != url.host) return null
-                if (!invalidDomain && !domainMatches(url.host, domain)) return null
-                hostOnly = invalidDomain
+                domain = EngineHosts.canonical(rawDomain) ?: return null
+                // RFC 6265 5.3 steps 5 and 6: an IP address or a public suffix is no cookie domain;
+                // equal to the host, it makes a host-only cookie.
+                val notADomain =
+                    EngineHosts.isIpAddress(url.host) || EngineHosts.isIpAddress(domain) || isPublicSuffix(domain, publicSuffixes)
+                if (notADomain && domain != url.host) return null
+                if (!notADomain && !domainMatches(url.host, domain)) return null
+                hostOnly = notADomain
             }
             return CookieScope(
                 domain = domain,
                 hostOnly = hostOnly,
                 path = pathAttribute?.takeIf { it.startsWith('/') } ?: defaultPath(url.path),
                 secure = secure,
-                setterHost = url.host,
-                setterPath = url.path,
             )
         }
+
+        /**
+         * RFC 6265bis cookie prefixes, compared case-insensitively: `__Secure-` needs `Secure`;
+         * `__Host-` needs `Secure`, no `Domain` attribute and `Path=/`.
+         */
+        private fun prefixAllows(
+            name: String,
+            secure: Boolean,
+            domainAttribute: String?,
+            pathAttribute: String?,
+        ): Boolean =
+            when {
+                name.startsWith("__Secure-", ignoreCase = true) -> secure
+                name.startsWith("__Host-", ignoreCase = true) -> secure && domainAttribute == null && pathAttribute == "/"
+                else -> true
+            }
+
+        /**
+         * A single label (`com`, `localhost`) always counts; beyond that [publicSuffixes] decides.
+         * One that fails counts every domain as a public suffix, so no cookie widens its scope.
+         */
+        private fun isPublicSuffix(
+            domain: String,
+            publicSuffixes: EnginePublicSuffixes?,
+        ): Boolean =
+            '.' !in domain ||
+                try {
+                    publicSuffixes?.isPublicSuffix(domain) == true
+                } catch (
+                    @Suppress("TooGenericExceptionCaught") e: RuntimeException,
+                ) {
+                    // The check runs on HTTP client threads; an application implementation that fails must not escape there.
+                    true
+                }
 
         /** RFC 6265 5.1.3 domain-match; an IP address matches only itself. */
         fun domainMatches(
             host: String,
             domain: String,
-        ): Boolean = host == domain || (!CookieUrl.isIpAddress(host) && host.endsWith(".$domain"))
+        ): Boolean = host == domain || (!EngineHosts.isIpAddress(host) && host.endsWith(".$domain"))
 
         /** RFC 6265 5.1.4 default-path: the request path up to its last `/`. */
         private fun defaultPath(requestPath: String): String {
@@ -464,22 +459,23 @@ private class CookieScope(
 }
 
 /**
- * The [EngineRedirectCookies] of one polling request: a copy of the jar taken when the request
- * starts, which the HTTP client's thread updates with what redirect responses set. The engine
- * applies those cookies to its own jar on the executor when the response arrives.
+ * The [EngineRedirectCookies] of one polling request. The HTTP client's thread stores what each
+ * redirect response sets in the engine's live jar the moment it arrives, and reads the `Cookie`
+ * header of the next hop from that jar, so concurrent requests of the engine never replay an
+ * outdated copy.
  */
 internal class RequestCookies(
-    private val firstUrl: String,
-    /** `Cookie` values from `extraHeaders`: sent as written, only to the host of [firstUrl]. */
-    private val explicit: List<String>,
+    firstUrl: String,
+    /**
+     * The `Cookie` entries of `extraHeaders` as one value, or `null` without one: on the host of
+     * [firstUrl] (any scheme or port) it is the whole `Cookie` header, never sent elsewhere.
+     */
+    private val explicit: String?,
     private val jar: EngineCookieJar?,
 ) : EngineRedirectCookies {
     private val firstHost = CookieUrl.parse(firstUrl)?.host
 
-    /** What each redirect response set: its URL, its `Set-Cookie` values and when it arrived. */
-    private val received = ArrayList<Triple<String, List<String>, Instant>>()
-
-    /** The URL the response came from: the last redirect target, or [firstUrl]. */
+    /** The URL the response came from: the last redirect target, or the first URL. */
     var finalUrl: String = firstUrl
         private set
 
@@ -488,32 +484,28 @@ internal class RequestCookies(
         setCookieHeaders: List<String>,
         nextUrl: String,
     ): List<String> {
-        if (jar != null && setCookieHeaders.isNotEmpty()) {
-            val copy = setCookieHeaders.toList()
-            val now = jar.now()
-            received += Triple(responseUrl, copy, now)
-            jar.parseCookies(copy, responseUrl, now)
-        }
+        jar?.parseCookies(setCookieHeaders.toList(), responseUrl)
         finalUrl = nextUrl
         val sameHost = firstHost != null && firstHost == CookieUrl.parse(nextUrl)?.host
-        val headers = if (sameHost) explicit.toMutableList() else ArrayList()
-        jar?.cookieHeader(nextUrl, unscopedHost = firstHost ?: "")?.let { headers += it }
-        return headers
+        if (sameHost && explicit != null) return listOf(explicit)
+        return listOfNotNull(jar?.cookieHeader(nextUrl, unscopedHost = firstHost.orEmpty()))
     }
 
-    /**
-     * On the executor, after the client called back: stores what the redirect responses set,
-     * with `Max-Age` counted from when each arrived, not from now.
-     */
-    fun applyTo(target: EngineCookieJar) {
-        for ((url, headers, receivedAt) in received) target.parseCookies(headers, url, receivedAt)
+    override fun redirectRefused(
+        responseUrl: String,
+        setCookieHeaders: List<String>,
+    ) {
+        jar?.parseCookies(setCookieHeaders.toList(), responseUrl)
     }
 }
 
 /** The browser limits [EngineCookieJar] applies. */
 internal object CookieLimits {
-    /** Cookies per site that Chromium keeps; RFC 6265 asks for at least 50. */
-    const val MAX_COOKIES: Int = 180
+    /** Cookies per cookie domain, as Chromium keeps per site; RFC 6265 asks for at least 50. */
+    const val MAX_COOKIES_PER_DOMAIN: Int = 180
+
+    /** Cookies in all, as Chromium keeps; RFC 6265 asks for at least 3000. */
+    const val MAX_COOKIES: Int = 3000
 
     /** Bytes of name and value per cookie that browsers accept (RFC 6265 asks for at least 4096). */
     const val MAX_COOKIE_BYTES: Int = 4096

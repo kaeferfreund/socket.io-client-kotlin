@@ -16,7 +16,22 @@ public class TransportOverrides(
 public class EngineClients(
     public val http: EngineHttpClient?,
     public val webSocket: EngineWebSocketClient?,
+    /**
+     * The public suffix list of the `withCredentials` cookie jar: a cookie whose `Domain` is a
+     * public suffix (`co.uk`) is rejected, or host-only when it names the host itself. `null`
+     * refuses only single-label domains (`com`).
+     */
+    public val publicSuffixes: EnginePublicSuffixes?,
 ) {
+    /**
+     * [http] and [webSocket], with the public suffixes of whichever of them implements
+     * [EnginePublicSuffixes] (`OkHttpEngineClients` does).
+     */
+    public constructor(
+        http: EngineHttpClient?,
+        webSocket: EngineWebSocketClient?,
+    ) : this(http, webSocket, http as? EnginePublicSuffixes ?: webSocket as? EnginePublicSuffixes)
+
     /**
      * Supplies default [EngineClients] through `java.util.ServiceLoader`.
      * The `socketio-okhttp` module registers one, so adding it to the

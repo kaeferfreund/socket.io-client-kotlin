@@ -12,10 +12,12 @@ public interface EngineHttpClient {
      * Starts [request]. Exactly one callback method runs, on any thread,
      * unless the returned handle is cancelled first (then none needs to run).
      *
-     * A client that follows redirects must ask [EngineHttpRequest.redirectCookies] for every
-     * hop: the engine learns the URL the response came from only through it, and stores that
-     * response's cookies for it. It should not repeat a POST body on another host, nor turn a
-     * POST into a GET: the body carries the engine's packets.
+     * A client that follows no redirects needs nothing else. One that follows them itself must
+     * call [EngineRedirectCookies.followRedirect] of [EngineHttpRequest.redirectCookies] for every
+     * hop (and [EngineRedirectCookies.redirectRefused] for a redirect it refuses): the engine
+     * stores each redirect response's cookies for the URL that sent it and learns only this way
+     * which URL the final response came from. It should not repeat a POST body on another host,
+     * nor turn a POST into a GET: the body carries the engine's packets.
      */
     public fun execute(
         request: EngineHttpRequest,
@@ -61,29 +63,44 @@ public class EngineHttpRequest(
 /**
  * The cookies of one polling request across the redirects its [EngineHttpClient] follows.
  *
- * The first request carries the engine's `Cookie` headers in [EngineHttpRequest.headers]. A client
+ * The first request carries the engine's `Cookie` header in [EngineHttpRequest.headers]. A client
  * that follows a redirect calls [followRedirect] before it sends the follow-up request, and sends
- * that request with the returned `Cookie` header values instead of the ones it carried so far.
- * The engine answers from its cookie jar by RFC 6265 rules (domain, host-only, path, `Secure`,
- * expiry) for the new URL; a `Cookie` header from `extraHeaders` only goes to the host of the
- * first request. A client that follows no redirects never calls it; one that follows them must,
- * see [EngineHttpClient.execute].
+ * that request with the returned `Cookie` header value instead of the one it carried so far. The
+ * engine answers from its cookie jar by RFC 6265 rules (domain, host-only, path, `Secure`,
+ * expiry) for the new URL. A `Cookie` entry of `extraHeaders` is the whole `Cookie` header on the
+ * host of the first request (any scheme or port) and is never sent to another host. A client
+ * that follows no redirects never calls it; one that follows them must, see
+ * [EngineHttpClient.execute].
  *
- * Called on the client's thread, one call at a time, before the request's callback runs; the
- * engine applies the cookies the redirect responses set to its jar when the response arrives.
+ * Called on the client's thread, one call at a time, before the request's callback runs. The
+ * cookies a redirect response sets are stored in the engine's jar during the call, so they are
+ * kept when a later hop fails.
  */
 public fun interface EngineRedirectCookies {
     /**
      * The redirect response for [responseUrl] carried [setCookieHeaders] (the values of its
      * `Set-Cookie` headers) and the client follows it to [nextUrl]. Stores those cookies for
-     * [responseUrl] and returns the `Cookie` header values for the request to [nextUrl]; an
-     * empty list means the request carries no `Cookie` header.
+     * [responseUrl] and returns the `Cookie` header values for the request to [nextUrl]: at most
+     * one, and an empty list means the request carries no `Cookie` header.
      */
     public fun followRedirect(
         responseUrl: String,
         setCookieHeaders: List<String>,
         nextUrl: String,
     ): List<String>
+
+    /**
+     * The client refuses to follow the redirect response for [responseUrl] and fails the request
+     * instead. Stores the cookies of its [setCookieHeaders] for [responseUrl], as a browser does
+     * for a redirect it blocks. A refused redirect the client returns as the response needs no
+     * call: the engine stores the final response's cookies itself.
+     */
+    public fun redirectRefused(
+        responseUrl: String,
+        setCookieHeaders: List<String>,
+    ) {
+        // Nothing to store by default.
+    }
 }
 
 /** A completed HTTP exchange. */

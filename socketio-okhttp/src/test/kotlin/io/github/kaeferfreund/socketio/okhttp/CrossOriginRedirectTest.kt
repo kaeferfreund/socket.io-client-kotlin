@@ -13,6 +13,7 @@ import okhttp3.tls.HandshakeCertificates
 import okhttp3.tls.HeldCertificate
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -120,11 +121,12 @@ class CrossOriginRedirectTest {
             "Cookie" to "io=jar",
         )
 
-    /** Records each redirect and answers with [answer] for the next URL. */
+    /** Records each redirect, followed or refused, and answers with [answer] for the next URL. */
     private class RecordingCookies(
         val answer: (String) -> List<String> = { emptyList() },
     ) : EngineRedirectCookies {
         val calls = Collections.synchronizedList(ArrayList<Triple<String, List<String>, String>>())
+        val refused = Collections.synchronizedList(ArrayList<Pair<String, List<String>>>())
 
         override fun followRedirect(
             responseUrl: String,
@@ -133,6 +135,13 @@ class CrossOriginRedirectTest {
         ): List<String> {
             calls += Triple(responseUrl, setCookieHeaders, nextUrl)
             return answer(nextUrl)
+        }
+
+        override fun redirectRefused(
+            responseUrl: String,
+            setCookieHeaders: List<String>,
+        ) {
+            refused += responseUrl to setCookieHeaders
         }
     }
 
@@ -221,16 +230,18 @@ class CrossOriginRedirectTest {
         assertEquals(emptyList<String>(), a.take().headers.values("Cookie"))
     }
 
-    private fun post(url: String) =
-        EngineHttpRequest(
-            "POST",
-            url,
-            listOf("Content-type" to "text/plain;charset=UTF-8", "Authorization" to "Bearer token"),
-            "40{\"token\":\"secret\"}",
-            null,
-            Long.MAX_VALUE,
-            RecordingCookies(),
-        )
+    private fun post(
+        url: String,
+        cookies: EngineRedirectCookies = RecordingCookies(),
+    ) = EngineHttpRequest(
+        "POST",
+        url,
+        listOf("Content-type" to "text/plain;charset=UTF-8", "Authorization" to "Bearer token"),
+        "40{\"token\":\"secret\"}",
+        null,
+        Long.MAX_VALUE,
+        cookies,
+    )
 
     // The body carries the engine's packets, the CONNECT packet with the auth payload among them:
     // a 307/308 repeats it on the host of the server URL (any port or scheme), never elsewhere.
@@ -238,16 +249,20 @@ class CrossOriginRedirectTest {
     fun a307Or308RepeatsThePostOnlyOnTheFirstHost() {
         val a = server()
         val b = server()
+        val secure = server(https = true)
         val foreign = server()
         for (code in listOf(307, 308)) {
-            a.enqueue(redirect(code, b.at("node1.example.test")))
-            b.enqueue(ok("posted"))
-            assertEquals("posted", execute(clients(), post(a.at("node1.example.test"))).getOrThrow().body)
-            val repeated = b.take()
-            assertEquals("POST", repeated.method)
-            assertEquals("40{\"token\":\"secret\"}", repeated.body!!.utf8())
-            assertEquals("text/plain;charset=UTF-8", repeated.headers["Content-Type"])
-            assertNull(repeated.headers["Authorization"])
+            for (target in listOf(b, secure)) {
+                // Another port, and HTTP to HTTPS on another port.
+                a.enqueue(redirect(code, target.at("node1.example.test")))
+                target.enqueue(ok("posted"))
+                assertEquals("posted", execute(clients(), post(a.at("node1.example.test"))).getOrThrow().body)
+                val repeated = target.take()
+                assertEquals("POST", repeated.method)
+                assertEquals("40{\"token\":\"secret\"}", repeated.body!!.utf8())
+                assertEquals("text/plain;charset=UTF-8", repeated.headers["Content-Type"])
+                assertNull(repeated.headers["Authorization"])
+            }
             a.enqueue(redirect(code, foreign.at("node2.example.test")))
             val result = execute(clients(), post(a.at("node1.example.test")))
             assertTrue(result.exceptionOrNull() is ProtocolException, "$code: $result")
@@ -262,7 +277,7 @@ class CrossOriginRedirectTest {
     fun aPostIsNeverTurnedIntoAGet() {
         val a = server()
         val b = server()
-        for (code in listOf(300, 301, 302, 303)) {
+        for (code in listOf(301, 302, 303)) {
             a.enqueue(redirect(code, b.at("node1.example.test")))
             val result = execute(clients(), post(a.at("node1.example.test")))
             assertTrue(result.exceptionOrNull() is ProtocolException, "$code: $result")
@@ -270,19 +285,75 @@ class CrossOriginRedirectTest {
             assertTrue(execute(clients(), post(a.at("node1.example.test"))).exceptionOrNull() is ProtocolException, "$code")
         }
         assertEquals(0, b.requestCount)
-        assertEquals(8, a.requestCount)
+        assertEquals(6, a.requestCount)
     }
 
+    // 301, 302, 303, 307 and 308, as Fetch and URLSession follow them; a 300 has no single target
+    // and is returned as the response.
     @Test
     fun aGetFollowsEveryRedirectStatus() {
         val a = server()
         val b = server()
-        for (code in listOf(300, 301, 302, 303, 307, 308)) {
+        for (code in listOf(301, 302, 303, 307, 308)) {
             a.enqueue(redirect(code, b.at("node2.example.test")))
             b.enqueue(ok("$code"))
             assertEquals("$code", execute(clients(), get(a.at("node1.example.test"))).getOrThrow().body)
             assertEquals("GET", b.take().method)
         }
+        a.enqueue(redirect(300, b.at("node2.example.test")))
+        assertEquals(300, execute(clients(), get(a.at("node1.example.test"))).getOrThrow().status)
+        a.enqueue(redirect(300, b.at("node2.example.test")))
+        assertEquals(300, execute(clients(), post(a.at("node1.example.test"))).getOrThrow().status)
+        assertEquals(5, b.requestCount)
+    }
+
+    // The cookies of a redirect that is not followed still reach the engine, as a browser stores them.
+    @Test
+    fun aRefusedRedirectStillHandsOverItsCookies() {
+        val a = server()
+        val b = server()
+        val cookies = RecordingCookies()
+        a.enqueue(redirect(302, b.at("node1.example.test"), "lb=1; Path=/"))
+        assertTrue(execute(clients(), post(a.at("node1.example.test"), cookies)).exceptionOrNull() is ProtocolException)
+        assertEquals(listOf(a.at("node1.example.test") to listOf("lb=1; Path=/")), cookies.refused.toList())
+        // One that fails to store them does not hide why the redirect was refused.
+        val failing =
+            object : EngineRedirectCookies {
+                override fun followRedirect(
+                    responseUrl: String,
+                    setCookieHeaders: List<String>,
+                    nextUrl: String,
+                ): List<String> = emptyList()
+
+                override fun redirectRefused(
+                    responseUrl: String,
+                    setCookieHeaders: List<String>,
+                ): Unit = error("broken")
+            }
+        a.enqueue(redirect(307, b.at("node2.example.test"), "lb=2; Path=/"))
+        val error = execute(clients(), post(a.at("node1.example.test"), failing)).exceptionOrNull()
+        assertTrue(error is ProtocolException, error.toString())
+        assertEquals("broken", error!!.suppressed.single().message)
+        assertEquals(0, b.requestCount)
+    }
+
+    // OkHttp keeps a trailing root dot and short IPv4 forms in its URLs; both name the same host.
+    @Test
+    fun hostsCompareInCanonicalFormAcrossRedirects() {
+        val a = server()
+        val b = server()
+        a.enqueue(redirect(307, "http://node1.example.test.:${b.port}/socket.io/?moved=1"))
+        b.enqueue(ok("posted"))
+        assertEquals("posted", execute(clients(), post(a.at("node1.example.test"))).getOrThrow().body)
+        a.take()
+        assertEquals("POST", b.take().method)
+        a.enqueue(redirect(302, "http://127.1:${a.port}/socket.io/?moved=2"))
+        a.enqueue(ok())
+        execute(clients(), get(a.at("127.0.0.1"))).getOrThrow()
+        a.take()
+        val moved = a.take()
+        assertEquals("/socket.io/?moved=2", moved.target)
+        assertEquals("Bearer token", moved.headers["Authorization"])
     }
 
     // Each hop starts from the previous one, so what was removed on the way out stays removed.
@@ -425,6 +496,40 @@ class CrossOriginRedirectTest {
         assertEquals(setOf(a.port), connected.toSet())
     }
 
+    // A certificate set on the OkHttp client directly is invisible to the library until a server
+    // asks for it; from then on, the chain stays within the first origin.
+    @Test
+    fun aClientCertificateSetOnTheClientDirectlyIsRecognisedOnceAHopPresentedIt() {
+        val a = server(https = true, requireClientAuth = true)
+        val b = server(https = true, requireClientAuth = true)
+        val identity =
+            HandshakeCertificates.Builder()
+                .addTrustedCertificate(ca.certificate)
+                .heldCertificate(HeldCertificate.Builder().signedBy(ca).commonName("client").build(), ca.certificate)
+                .build()
+        val clients = OkHttpEngineClients(base().sslSocketFactory(identity.sslSocketFactory(), identity.trustManager).build())
+        a.enqueue(redirect(302, a.at("node1.example.test", "/socket.io/?moved=1")))
+        a.enqueue(ok("same origin"))
+        assertEquals("same origin", execute(clients, get(a.at("node1.example.test"))).getOrThrow().body)
+        for (target in listOf(b.at("node1.example.test"), a.at("node2.example.test"))) {
+            a.enqueue(redirect(302, target))
+            val result = execute(clients, get(a.at("node1.example.test")))
+            assertTrue(result.exceptionOrNull() is ProtocolException, "$target: $result")
+        }
+        assertEquals(0, b.requestCount)
+        assertTrue(b.port !in connected)
+    }
+
+    // The withCredentials jar refuses a public suffix as cookie Domain by OkHttp's list.
+    @Test
+    fun theCookieJarUsesOkHttpsPublicSuffixList() {
+        val clients = clients()
+        assertEquals(clients, clients.clients.publicSuffixes)
+        assertEquals(clients, io.github.kaeferfreund.socketio.engineio.EngineClients(clients, clients).publicSuffixes)
+        for (suffix in listOf("com", "co.uk", "github.io", "localhost", "test")) assertTrue(clients.isPublicSuffix(suffix), suffix)
+        for (domain in listOf("example.com", "shop.co.uk", "example.test", "user.github.io")) assertFalse(clients.isPublicSuffix(domain), domain)
+    }
+
     @Test
     fun withPinsARedirectToAnUnpinnedHostIsRefused() {
         val a = server(https = true)
@@ -505,7 +610,8 @@ class CrossOriginRedirectTest {
             assertEquals(listOf("dom=1; lb=3"), sibling.headers.values("Cookie"))
             assertEquals("evil.test:${elsewhere.port}", foreign.headers["Host"])
             assertEquals(emptyList<String>(), foreign.headers.values("Cookie"))
-            assertEquals(listOf("app=1", "host=1; dom=1; lb=3"), samePort.headers.values("Cookie"))
+            // On the first host the explicit Cookie header is the whole Cookie header.
+            assertEquals(listOf("app=1"), samePort.headers.values("Cookie"))
             for (request in listOf(sibling, foreign, samePort)) {
                 assertNull(request.headers["Authorization"], request.toString())
                 assertEquals("key", request.headers["X-Api-Key"], request.toString())

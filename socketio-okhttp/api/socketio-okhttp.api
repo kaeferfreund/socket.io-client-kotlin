@@ -6,7 +6,7 @@ public final class io/github/kaeferfreund/socketio/okhttp/OkHttpClientsBuilder {
 	public final fun setTlsPolicy (Lio/github/kaeferfreund/socketio/okhttp/TlsPolicy;)V
 }
 
-public final class io/github/kaeferfreund/socketio/okhttp/OkHttpEngineClients : io/github/kaeferfreund/socketio/engineio/EngineHttpClient, io/github/kaeferfreund/socketio/engineio/EngineWebSocketClient {
+public final class io/github/kaeferfreund/socketio/okhttp/OkHttpEngineClients : io/github/kaeferfreund/socketio/engineio/EngineHttpClient, io/github/kaeferfreund/socketio/engineio/EnginePublicSuffixes, io/github/kaeferfreund/socketio/engineio/EngineWebSocketClient {
 	public static final field Companion Lio/github/kaeferfreund/socketio/okhttp/OkHttpEngineClients$Companion;
 	public fun <init> ()V
 	public fun <init> (Lokhttp3/OkHttpClient;)V
@@ -15,6 +15,7 @@ public final class io/github/kaeferfreund/socketio/okhttp/OkHttpEngineClients : 
 	public fun execute (Lio/github/kaeferfreund/socketio/engineio/EngineHttpRequest;Lio/github/kaeferfreund/socketio/engineio/EngineHttpCallback;)Lio/github/kaeferfreund/socketio/engineio/Cancellable;
 	public final fun getClient ()Lokhttp3/OkHttpClient;
 	public final fun getClients ()Lio/github/kaeferfreund/socketio/engineio/EngineClients;
+	public fun isPublicSuffix (Ljava/lang/String;)Z
 }
 
 public final class io/github/kaeferfreund/socketio/okhttp/OkHttpEngineClients$Companion {
