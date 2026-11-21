@@ -14,14 +14,26 @@ class EngineCookieTest {
         assertEquals(EngineCookie("foo", "bar"), EngineCookie.parse("foo=bar"))
     }
 
-    // JS-181: Max-Age is read first, then Expires overrides it.
+    // JS-181, deliberately RFC 6265 5.3 instead of the Node jar: Max-Age takes precedence over
+    // Expires in either order (the Node jar lets the later attribute win).
     @Test
     fun parsesAComplexSetCookieHeader() {
+        val now = Instant.parse("2026-11-21T12:00:00Z")
         val cookie =
             EngineCookie.parse(
                 "foo=bar; Max-Age=1000; Domain=.example.com; Path=/; Expires=Tue, 01 Jul 2025 10:01:11 GMT; HttpOnly; Secure; SameSite=strict",
+                now,
             )
-        assertEquals(EngineCookie("foo", "bar", Instant.parse("2025-07-01T10:01:11Z")), cookie)
+        assertEquals(EngineCookie("foo", "bar", now.plusSeconds(1000)), cookie)
+        assertEquals(
+            EngineCookie("foo", "bar", now.plusSeconds(1000)),
+            EngineCookie.parse("foo=bar; Expires=Tue, 01 Jul 2025 10:01:11 GMT; Max-Age=1000", now),
+        )
+        // An invalid Max-Age is ignored, so Expires applies.
+        assertEquals(
+            EngineCookie("foo", "bar", Instant.parse("2025-07-01T10:01:11Z")),
+            EngineCookie.parse("foo=bar; Max-Age=soon; Expires=Tue, 01 Jul 2025 10:01:11 GMT", now),
+        )
     }
 
     // JS-182

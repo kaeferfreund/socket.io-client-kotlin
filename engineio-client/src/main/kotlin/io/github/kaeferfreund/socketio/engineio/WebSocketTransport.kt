@@ -36,6 +36,7 @@ public class WebSocketTransport(
                 compressionThreshold = options.perMessageDeflateThreshold,
             )
         val jar = options.cookieJar
+        val cookieUrl = cookieUrl
         connection =
             try {
                 client.connect(
@@ -45,11 +46,11 @@ public class WebSocketTransport(
                             executor.execute { if (current == generation) block() }
                         }
 
-                        override fun onOpen(responseHeaders: List<Pair<String, String>>) =
-                            deliver {
-                                jar?.parseCookies(responseHeaders.filter { it.first.equals("set-cookie", true) }.map { it.second }, requestPath)
-                                onOpen()
-                            }
+                        override fun onOpen(responseHeaders: List<Pair<String, String>>) {
+                            // Stored the moment the handshake response arrives, like polling responses.
+                            jar?.parseCookies(responseHeaders.filter { it.first.equals("set-cookie", true) }.map { it.second }, cookieUrl)
+                            deliver { onOpen() }
+                        }
 
                         override fun onMessage(text: String) = deliver { onData(EngineIOData.Text(text)) }
 

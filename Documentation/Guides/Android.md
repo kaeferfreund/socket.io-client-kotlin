@@ -207,8 +207,9 @@ invalidated it), the handshake fails and `connect_error` reports a
 during a handshake of this manager, whatever certificate authorities the server
 lists, as Android's own KeyChain clients do: servers that accept certificates
 from authorities they do not list keep working. The manager connects only to the
-origin of its URL, since redirects to another origin are refused before any
-connection is made.
+origin of its URL: while a client certificate is configured, a polling redirect
+to another origin is refused before any connection is made (see
+[Redirects and cookies](Configuration.md#redirects-and-cookies)).
 
 ## Network Security Config
 
@@ -232,7 +233,9 @@ Allow cleartext only for local development, in the debug source set
 </network-security-config>
 ```
 
-Pins can be declared here instead of in `TlsPolicy`:
+Pins can be declared here instead of in `TlsPolicy`. The client cannot see them,
+though: a polling redirect from a pinned host to an unpinned one is refused only
+for pins in `TlsPolicy` (see [Redirects and cookies](Configuration.md#redirects-and-cookies)):
 
 ```xml
 <domain-config>

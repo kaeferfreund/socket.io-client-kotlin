@@ -241,21 +241,29 @@ public class PollingTransport(
         val headers = requestHeaders()
         if (method == "POST") headers.add("Content-type" to "text/plain;charset=UTF-8")
         headers.add("Accept" to "*/*")
+        val url = uri()
+        val jar = options.cookieJar
+        // Deliberate difference from JavaScript, whose Node client sends the same headers to every
+        // redirect target: the HTTP client rebuilds the cookies of each redirect from the live jar by
+        // RFC 6265 rules (see EngineRedirectCookies).
+        val redirectCookies = RequestCookies(url, explicitCookie, jar)
         val request =
             EngineHttpRequest(
                 method = method,
-                url = uri(),
+                url = url,
                 headers = headers,
                 body = body,
                 timeout = timeout,
                 maxResponseBytes = options.maxPollingResponseBytes,
+                redirectCookies = redirectCookies,
             )
-        val jar = options.cookieJar
         val callback =
             object : EngineHttpCallback {
                 override fun onResponse(response: EngineHttpResponse) {
+                    // Stored the moment the response arrives (the jar is thread-safe), for the URL that
+                    // sent it: the last redirect target. Redirect responses stored theirs on the way.
+                    jar?.parseCookies(response.headerValues("set-cookie"), redirectCookies.finalUrl)
                     executor.execute {
-                        jar?.parseCookies(response.headerValues("set-cookie"), requestPath)
                         // 1223 is IE's mangled 204; kept for fidelity with the JavaScript check.
                         if (response.status == 200 || response.status == 1223) {
                             onResult(Result.success(response.body))

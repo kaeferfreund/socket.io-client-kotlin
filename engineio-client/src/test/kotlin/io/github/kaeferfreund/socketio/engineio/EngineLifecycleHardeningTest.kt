@@ -373,20 +373,22 @@ class EngineLifecycleHardeningTest {
                 headers = listOf("set-cookie" to "scoped=1; Path=/socket.io", "set-cookie" to "everywhere=2; Path=/", "set-cookie" to "implicit=3"),
             )
             s.settle()
-            assertEquals("scoped=1; everywhere=2; implicit=3", s.http.pending("GET").single().request.header("cookie"))
+            // RFC 6265 5.4: longer paths first (`/socket.io`), then in creation order.
+            assertEquals("scoped=1; implicit=3; everywhere=2", s.http.pending("GET").single().request.header("cookie"))
             assertEquals("everywhere=2", s.ws.connections.single().request.headers.firstOrNull { it.first == "cookie" }?.second)
             s.executor.shutdown()
         }
 
+    // RFC 6265 without the Node jar's habit: a cookie whose Path does not match is not sent back,
+    // also not to the URL that set it.
     @Test
-    fun cookiesAreReplayedOnTheSamePathWhateverTheirPathAttribute() =
+    fun aCookieIsNotReplayedOnThePathThatSetItWhenItsPathDoesNotMatch() =
         runTest {
             val s = setup(EngineOptions(path = "/socket.io", withCredentials = true))
             s.http.answerPoll(handshake(), headers = listOf("set-cookie" to "elsewhere=1; Path=/admin", "set-cookie" to "sticky=2"))
             s.settle()
-            val expected = "elsewhere=1; sticky=2"
-            assertEquals(expected, s.http.pending("GET").single().request.header("cookie"))
-            assertEquals(expected, s.ws.connections.single().request.headers.firstOrNull { it.first == "cookie" }?.second)
+            assertEquals("sticky=2", s.http.pending("GET").single().request.header("cookie"))
+            assertEquals("sticky=2", s.ws.connections.single().request.headers.firstOrNull { it.first == "cookie" }?.second)
             s.executor.shutdown()
         }
 
@@ -406,7 +408,8 @@ class EngineLifecycleHardeningTest {
                 )
             s.http.answerPoll(handshake(), headers = listOf("set-cookie" to "elsewhere=1; Path=/admin", "set-cookie" to "sticky=2"))
             s.settle()
-            assertEquals("elsewhere=1; sticky=2", s.webSocketCookie())
+            // `sticky` defaults to `/socket.io`, which the WebSocket's `/socket.io/` matches.
+            assertEquals("sticky=2", s.webSocketCookie())
             s.executor.shutdown()
         }
 
@@ -449,26 +452,26 @@ class EngineLifecycleHardeningTest {
     @Test
     fun cookiePathsMatchLikeInABrowser() {
         val jar = EngineCookieJar()
-        jar.parseCookies(listOf("explicit=1; Path=/a", "implicit=2", "invalid=3; Path=x", "root=4; path=/"), "/a/")
-        assertEquals("explicit=1; implicit=2; invalid=3; root=4", jar.cookieHeader("/a/"))
-        assertEquals("explicit=1; implicit=2; invalid=3; root=4", jar.cookieHeader("/a/b/"))
-        assertEquals("explicit=1; implicit=2; invalid=3; root=4", jar.cookieHeader("/a"))
-        assertEquals("root=4", jar.cookieHeader("/ab/"))
-        assertEquals("root=4", jar.cookieHeader("/"))
+        jar.parseCookies(listOf("explicit=1; Path=/a", "implicit=2", "invalid=3; Path=x", "root=4; path=/"), "http://h.example/a/")
+        assertEquals("explicit=1; implicit=2; invalid=3; root=4", jar.cookieHeader("http://h.example/a/"))
+        assertEquals("explicit=1; implicit=2; invalid=3; root=4", jar.cookieHeader("http://h.example/a/b/"))
+        assertEquals("explicit=1; implicit=2; invalid=3; root=4", jar.cookieHeader("http://h.example/a"))
+        assertEquals("root=4", jar.cookieHeader("http://h.example/ab/"))
+        assertEquals("root=4", jar.cookieHeader("http://h.example/"))
         // The public API is not scoped, as in JavaScript.
         assertEquals("explicit=1; implicit=2; invalid=3; root=4", jar.cookieHeader())
         jar.parseCookies(listOf("unscoped=5"))
-        assertEquals("root=4; unscoped=5", jar.cookieHeader("/elsewhere/"))
+        assertEquals("root=4; unscoped=5", jar.cookieHeader("http://h.example/elsewhere/"))
     }
 
     @Test
     fun aPathAttributeIsFoundWithoutASpaceAfterTheSemicolon() {
         val jar = EngineCookieJar()
-        jar.parseCookies(listOf("tight=1; HttpOnly;Path=/a/sub", "spaced=2; Secure ;  Path=/a/sub"), "/a/")
-        assertEquals("tight=1; spaced=2", jar.cookieHeader("/a/"))
-        assertEquals("tight=1; spaced=2", jar.cookieHeader("/a/sub/"))
+        jar.parseCookies(listOf("tight=1; HttpOnly;Path=/a/sub", "spaced=2; Secure ;  Path=/a/sub"), "https://h.example/a/")
+        assertEquals(null, jar.cookieHeader("https://h.example/a/"))
+        assertEquals("tight=1; spaced=2", jar.cookieHeader("https://h.example/a/sub/"))
         // Without the attribute, the default path "/a" would match here.
-        assertEquals(null, jar.cookieHeader("/a/other/"))
+        assertEquals(null, jar.cookieHeader("https://h.example/a/other/"))
     }
 
     @Test
@@ -476,13 +479,13 @@ class EngineLifecycleHardeningTest {
         val jar = EngineCookieJar()
         jar.parseCookies(List(1000) { "c$it=$it" })
         val names = jar.current.map { it.name }
-        assertEquals(CookieLimits.MAX_COOKIES, names.size)
+        assertEquals(CookieLimits.MAX_COOKIES_PER_DOMAIN, names.size)
         // The oldest cookies make room; the newest are kept.
-        assertEquals("c${1000 - CookieLimits.MAX_COOKIES}", names.first())
+        assertEquals("c${1000 - CookieLimits.MAX_COOKIES_PER_DOMAIN}", names.first())
         assertEquals("c999", names.last())
         // Replacing a stored cookie never evicts another one.
         jar.parseCookies(listOf("c999=new"))
-        assertEquals(CookieLimits.MAX_COOKIES, jar.current.size)
+        assertEquals(CookieLimits.MAX_COOKIES_PER_DOMAIN, jar.current.size)
         assertEquals("new", jar.current.last().value)
     }
 
@@ -491,11 +494,11 @@ class EngineLifecycleHardeningTest {
         var now = java.time.Instant.parse("2026-01-01T00:00:00Z")
         val jar = EngineCookieJar { now }
         jar.parseCookies(listOf("short=1; Max-Age=1"))
-        jar.parseCookies(List(CookieLimits.MAX_COOKIES - 1) { "c$it=$it" })
+        jar.parseCookies(List(CookieLimits.MAX_COOKIES_PER_DOMAIN - 1) { "c$it=$it" })
         now = now.plusSeconds(2)
         jar.parseCookies(listOf("late=1"))
         val names = jar.current.map { it.name }
-        assertEquals(CookieLimits.MAX_COOKIES, names.size)
+        assertEquals(CookieLimits.MAX_COOKIES_PER_DOMAIN, names.size)
         assertEquals("c0", names.first())
         assertEquals("late", names.last())
     }
@@ -504,15 +507,15 @@ class EngineLifecycleHardeningTest {
     fun anAlreadyExpiredCookieNeverEvictsALiveOne() {
         val now = java.time.Instant.parse("2026-01-01T00:00:00Z")
         val jar = EngineCookieJar { now }
-        jar.parseCookies(List(CookieLimits.MAX_COOKIES) { "c$it=$it" })
+        jar.parseCookies(List(CookieLimits.MAX_COOKIES_PER_DOMAIN) { "c$it=$it" })
         jar.parseCookies(listOf("x=; Max-Age=-1", "y=; Max-Age=0", "z=; Expires=Thu, 01 Jan 1970 00:00:00 GMT"))
         val names = jar.current.map { it.name }
-        assertEquals(CookieLimits.MAX_COOKIES, names.size)
+        assertEquals(CookieLimits.MAX_COOKIES_PER_DOMAIN, names.size)
         assertEquals("c0", names.first())
         assertFalse(names.any { it in setOf("x", "y", "z") }, names.toString())
         // An expired cookie still deletes a stored one of the same name.
         jar.parseCookies(listOf("c5=; Max-Age=0"))
-        assertEquals(CookieLimits.MAX_COOKIES - 1, jar.current.size)
+        assertEquals(CookieLimits.MAX_COOKIES_PER_DOMAIN - 1, jar.current.size)
         assertFalse(jar.current.any { it.name == "c5" })
     }
 

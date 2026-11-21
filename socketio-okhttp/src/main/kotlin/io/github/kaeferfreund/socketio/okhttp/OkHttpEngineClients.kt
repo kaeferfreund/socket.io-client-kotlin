@@ -2,16 +2,20 @@ package io.github.kaeferfreund.socketio.okhttp
 
 import io.github.kaeferfreund.socketio.engineio.Cancellable
 import io.github.kaeferfreund.socketio.engineio.EngineClients
+import io.github.kaeferfreund.socketio.engineio.EngineHosts
 import io.github.kaeferfreund.socketio.engineio.EngineHttpCallback
 import io.github.kaeferfreund.socketio.engineio.EngineHttpClient
 import io.github.kaeferfreund.socketio.engineio.EngineHttpRequest
 import io.github.kaeferfreund.socketio.engineio.EngineHttpResponse
+import io.github.kaeferfreund.socketio.engineio.EnginePublicSuffixes
+import io.github.kaeferfreund.socketio.engineio.EngineRedirectCookies
 import io.github.kaeferfreund.socketio.engineio.EngineWebSocketClient
 import io.github.kaeferfreund.socketio.engineio.EngineWebSocketConnection
 import io.github.kaeferfreund.socketio.engineio.EngineWebSocketListener
 import io.github.kaeferfreund.socketio.engineio.EngineWebSocketRequest
 import okhttp3.Call
 import okhttp3.Callback
+import okhttp3.CertificatePinner
 import okhttp3.Dispatcher
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -42,19 +46,54 @@ public class ResponseTooLargeException(
  * (applied to a derived client that shares the connection pool):
  * - no read timeout, since a long poll legitimately waits a heartbeat
  *   interval and the engine's heartbeat detects dead connections;
- * - redirects between HTTPS and HTTP are never followed (`followSslRedirects
- *   = false`), so a redirect cannot downgrade the connection, over any hop;
- * - a polling request follows a redirect only within its origin (scheme, host
- *   and port): OkHttp would otherwise send the extra headers, cookies and a
- *   POST body on to another host. The origin is checked before the redirect is
- *   followed, so no connection (and no TLS handshake presenting a client
- *   certificate) is made to another origin. The WebSocket handshake follows no
- *   redirect, like browsers and Node's `ws`;
+ * - polling follows redirects itself instead of OkHttp, at most 20 follow-ups,
+ *   also to other origins:
+ *   - a GET follows 301, 302, 303, 307 and 308, as Fetch and `URLSession` do (a
+ *     300 is returned as the response). A POST, which carries the engine's
+ *     packets (with the Socket.IO `auth` payload), follows only a 307 or 308,
+ *     which repeat it with its body, and only on the host of the first request
+ *     (any scheme or port). A redirect that would turn it into a body-less GET
+ *     (301–303, OkHttp's method rule) or send its body to another host fails the
+ *     request instead of losing or forwarding the packets;
+ *   - from HTTPS to HTTP never, compared with the current hop and the first
+ *     request; the redirect response is returned instead, so the engine reports
+ *     its status (`followSslRedirects = false` for everything else). HTTP to
+ *     HTTPS is followed;
+ *   - when the origin (scheme, host or port) changes, `Authorization` and
+ *     `Proxy-Authorization` are removed, and so is a `Host` header from
+ *     `extraHeaders` when the host or port changes;
+ *   - the `Cookie` header is rebuilt for every hop from
+ *     [EngineHttpRequest.redirectCookies] (the engine's jar by RFC 6265 rules,
+ *     an explicit `Cookie` from `extraHeaders` only to the first host) after
+ *     the `Set-Cookie` headers of the redirect response were stored. A request
+ *     without it keeps its `Cookie` headers for the first host only. OkHttp
+ *     alone removes `Authorization` but sends an application `Cookie` header to
+ *     any host;
+ *   - other headers, such as an API key in `extraHeaders`, follow, as in
+ *     browsers, curl and the Swift client; send tokens as `Authorization` when
+ *     they must stay with the server;
+ *   - with a client certificate, a redirect to another origin is refused: one
+ *     configured through [TlsPolicy] from the start, one set on [client]
+ *     directly once a hop of the chain presented it. From a host certificate
+ *     pins cover, a redirect to another host no pin covers is refused. Both are
+ *     checked before the follow-up is sent, so no connection (and no TLS
+ *     handshake presenting the certificate) is made there. A certificate set on
+ *     [client] that no server of the chain asked for so far, and pins from
+ *     Android's Network Security Config, are not taken into account;
+ *   - the `Set-Cookie` headers of a redirect response are stored in the
+ *     engine's jar also when the redirect is refused;
+ *   - an OkHttp `Authenticator` on [client] answers a 401 of a redirect target
+ *     too; it must check the host before it adds credentials. Network
+ *     interceptors (`addNetworkInterceptor`) run on every hop, after these
+ *     rules removed the credentials, so one that adds credentials must check
+ *     the host as well;
+ * - the WebSocket handshake follows no redirect, like browsers and Node's `ws`;
  * - at least 64 concurrent requests per host, so several managers polling
  *   the same server cannot starve each other's POSTs.
  *
  * Configure TLS, proxies, cookies, DNS or the socket factory on [client]
- * (see [TlsPolicy] and the Android module).
+ * (see [TlsPolicy] and the Android module). The `withCredentials` cookie jar
+ * uses OkHttp's public suffix list ([isPublicSuffix]).
  *
  * OkHttp reads (and, with permessage-deflate, inflates) each incoming WebSocket
  * message completely before [EngineWebSocketListener.onMessage] runs and has no
@@ -65,13 +104,13 @@ public class ResponseTooLargeException(
 public class OkHttpEngineClients(
     client: OkHttpClient = defaultClient,
 ) : EngineHttpClient,
-    EngineWebSocketClient {
+    EngineWebSocketClient,
+    EnginePublicSuffixes {
     public val client: OkHttpClient =
         client
             .newBuilder()
             .readTimeout(0, TimeUnit.MILLISECONDS)
             .followSslRedirects(false)
-            .addNetworkInterceptor(SameOriginHops)
             .dispatcher(
                 client.dispatcher.takeIf { it.maxRequestsPerHost >= 64 }
                     ?: Dispatcher(client.dispatcher.executorService).apply {
@@ -82,17 +121,37 @@ public class OkHttpEngineClients(
 
     /**
      * The client for polling requests: OkHttp's redirect following is replaced by
-     * [SameOriginRedirects], which checks a redirect's origin before connecting to it.
+     * [PollingRedirects], which decides on a redirect before connecting to its target.
      */
     private val pollingClient: OkHttpClient =
         this.client
             .newBuilder()
             .followRedirects(false)
-            .addInterceptor(SameOriginRedirects(followRedirects = this.client.followRedirects))
-            .build()
+            .addInterceptor(
+                PollingRedirects(
+                    followRedirects = this.client.followRedirects,
+                    clientCertificate = hasClientCertificate(this.client),
+                    pinner = this.client.certificatePinner,
+                ),
+            ).build()
 
-    /** Both halves as [EngineClients]. */
-    public val clients: EngineClients get() = EngineClients(this, this)
+    /** Both halves as [EngineClients], with OkHttp's public suffix list for the cookie jar. */
+    public val clients: EngineClients get() = EngineClients(this, this, this)
+
+    /**
+     * Whether [domain] is a public suffix by OkHttp's copy of the public suffix list (`com`,
+     * `co.uk`, `github.io`): OkHttp finds no registrable domain for it. A name OkHttp does not
+     * accept as a host, or a list that cannot be loaded, leaves only single labels as public
+     * suffixes, as without OkHttp.
+     */
+    override fun isPublicSuffix(domain: String): Boolean =
+        try {
+            HttpUrl.Builder().scheme("http").host(domain).build().topPrivateDomain() == null
+        } catch (e: IllegalArgumentException) {
+            '.' !in domain
+        } catch (e: IllegalStateException) {
+            '.' !in domain
+        }
 
     override fun execute(
         request: EngineHttpRequest,
@@ -101,7 +160,7 @@ public class OkHttpEngineClients(
         val okRequest =
             try {
                 val url = request.url.toHttpUrl()
-                val builder = Request.Builder().url(url).tag(Origin::class.java, Origin.of(url))
+                val builder = Request.Builder().url(url).tag(PollingRequest::class.java, PollingRequest(request.redirectCookies))
                 for ((name, value) in request.headers) addHeader(builder, name, value)
                 if (request.method == "POST") {
                     builder.post((request.body ?: "").toRequestBody(TEXT_PLAIN))
@@ -294,81 +353,175 @@ public class OkHttpEngineClients(
         secrets: List<String>,
     ): String = secrets.filter { it.isNotEmpty() }.fold(text) { result, secret -> result.replace(secret, REDACTED) }
 
-    /** Scheme, host and port of the URL a request was made for. */
-    private class Origin private constructor(
-        val scheme: String,
-        val host: String,
-        val port: Int,
-    ) {
-        fun matches(url: HttpUrl): Boolean = url.scheme == scheme && url.host == host && url.port == port
-
-        companion object {
-            fun of(url: HttpUrl): Origin = Origin(url.scheme, url.host, url.port)
-        }
-    }
+    /** Marks a polling request; [cookies] rebuild its `Cookie` header on redirects. */
+    private class PollingRequest(
+        val cookies: EngineRedirectCookies?,
+    )
 
     /**
-     * Fails a redirect to another origin; network interceptors see every hop of a call. A
-     * second line of defence behind [SameOriginRedirects], also for calls made on [client].
+     * Follows the redirects of a polling request (at most [MAX_FOLLOW_UPS]) with the method and
+     * credential rules of the class documentation. Decided here, before the follow-up is sent, a
+     * refused redirect causes no DNS lookup, connection or TLS handshake at its target.
+     *
+     * Deliberate difference from JavaScript, whose Node client (`xmlhttprequest-ssl`) follows 302,
+     * 303 and 307 to any origin with the same headers and without the POST body (browsers apply
+     * CORS): credentials stay with the origin they were meant for, and a body is never lost.
      */
-    private object SameOriginHops : Interceptor {
-        override fun intercept(chain: Interceptor.Chain): Response {
-            val request = chain.request()
-            val origin = request.tag(Origin::class.java)
-            if (origin != null && !origin.matches(request.url)) throw crossOrigin(request.url)
-            return chain.proceed(request)
-        }
-    }
-
-    /**
-     * Follows the redirects of a polling request as OkHttp does (a 307/308 repeats the method
-     * and body, other codes continue with a GET; at most [MAX_FOLLOW_UPS]) but only within the
-     * request's origin. Checked here, before the follow-up is sent, a redirect to another origin
-     * causes no DNS lookup, connection or TLS handshake there.
-     */
-    private class SameOriginRedirects(
+    private class PollingRedirects(
         private val followRedirects: Boolean,
+        private val clientCertificate: Boolean,
+        private val pinner: CertificatePinner,
     ) : Interceptor {
         override fun intercept(chain: Interceptor.Chain): Response {
-            val origin = chain.request().tag(Origin::class.java)
-            var response = chain.proceed(chain.request())
-            if (origin == null || !followRedirects) return response
+            val first = chain.request()
+            val polling = first.tag(PollingRequest::class.java)
+            var response = chain.proceed(first)
+            if (polling == null || !followRedirects) return response
             var followUps = 0
+            // A certificate set on the OkHttp client directly is known only once a hop presented it.
+            var certificate = clientCertificate
             while (true) {
-                val next = followUp(response) ?: return response
+                certificate = certificate || response.handshake?.localCertificates?.isNotEmpty() == true
+                val target = redirectTarget(response, first.url) ?: return response
+                val refusal =
+                    refusal(response, first.url, target, certificate)
+                        ?: if (followUps >= MAX_FOLLOW_UPS) ProtocolException("Too many follow-up requests: ${followUps + 1}") else null
+                if (refusal != null) {
+                    refuse(response, polling.cookies, refusal)
+                    throw refusal
+                }
+                followUps++
+                val next =
+                    try {
+                        followUp(response, target, first, polling.cookies)
+                    } catch (
+                        @Suppress("TooGenericExceptionCaught") e: RuntimeException,
+                    ) {
+                        // A custom EngineRedirectCookies that throws or returns a header value OkHttp
+                        // rejects fails the request; a RuntimeException would escape OkHttp's callback.
+                        response.close()
+                        throw IOException("the follow-up request of a redirect could not be built", e)
+                    }
                 response.close()
-                if (!origin.matches(next.url)) throw crossOrigin(next.url)
-                if (++followUps > MAX_FOLLOW_UPS) throw ProtocolException("Too many follow-up requests: $followUps")
                 response = chain.proceed(next)
             }
         }
 
-        /** OkHttp's `RetryAndFollowUpInterceptor.buildRedirectRequest` with `followSslRedirects = false`. */
-        private fun followUp(response: Response): Request? {
+        /**
+         * Stores the `Set-Cookie` headers of the redirect [response] that is not followed, as a
+         * browser does for a blocked redirect, and closes it.
+         */
+        private fun refuse(
+            response: Response,
+            cookies: EngineRedirectCookies?,
+            refusal: ProtocolException,
+        ) {
+            try {
+                cookies?.redirectRefused(response.request.url.toString(), response.headers("Set-Cookie"))
+            } catch (
+                @Suppress("TooGenericExceptionCaught") e: RuntimeException,
+            ) {
+                // A custom EngineRedirectCookies that fails must not hide why the redirect was refused.
+                refusal.addSuppressed(e)
+            } finally {
+                response.close()
+            }
+        }
+
+        /**
+         * Where [response] redirects to, or `null` when it is returned as is: not a redirect, no
+         * usable `Location`, or a downgrade from HTTPS to HTTP after this hop or the first.
+         */
+        private fun redirectTarget(
+            response: Response,
+            firstUrl: HttpUrl,
+        ): HttpUrl? {
             if (response.code !in REDIRECT_CODES) return null
             val location = response.header("Location") ?: return null
+            val url = response.request.url.resolve(location) ?: return null
+            if (!url.isHttps && (response.request.url.isHttps || firstUrl.isHttps)) return null
+            return url
+        }
+
+        /** Why following [response] to [target] is refused, or `null`. */
+        private fun refusal(
+            response: Response,
+            firstUrl: HttpUrl,
+            target: HttpUrl,
+            clientCertificate: Boolean,
+        ): ProtocolException? {
             val request = response.request
-            val url = request.url.resolve(location) ?: return null
-            // followSslRedirects = false: a redirect between HTTP and HTTPS is returned, not followed.
-            if (url.scheme != request.url.scheme) return null
-            val builder = request.newBuilder().url(url)
             if (request.method != "GET" && request.method != "HEAD") {
-                if (response.code == HTTP_TEMP_REDIRECT || response.code == HTTP_PERM_REDIRECT) {
-                    builder.method(request.method, request.body)
-                } else {
-                    builder.method("GET", null).removeHeader("Transfer-Encoding").removeHeader("Content-Length").removeHeader("Content-Type")
+                // A POST carries packets: as a body-less GET they would be lost while the write
+                // reports success, and the CONNECT packet's auth payload must not reach another host.
+                if (response.code != HTTP_TEMP_REDIRECT && response.code != HTTP_PERM_REDIRECT) {
+                    return ProtocolException("redirect ${response.code} of a ${request.method} refused, it would drop the body: ${target.redact()}")
+                }
+                if (target.canonicalHost() != firstUrl.canonicalHost()) {
+                    return ProtocolException("redirect of a ${request.method} body to another host refused: ${target.redact()}")
                 }
             }
+            // A client certificate goes to the origin it was configured for only. OkHttp's socket
+            // factory belongs to the client, not to a host, so the redirect is refused.
+            if (clientCertificate && !sameOrigin(firstUrl, target)) {
+                return ProtocolException("redirect to another origin refused while a client certificate is configured: ${target.redact()}")
+            }
+            // From a pinned host, a host without a pin would silently lose pinning.
+            val from = request.url
+            val losesPins = pinner.findMatchingPins(from.host).isNotEmpty() && pinner.findMatchingPins(target.host).isEmpty()
+            if (target.canonicalHost() != from.canonicalHost() && losesPins) {
+                return ProtocolException("redirect from a pinned host to a host without certificate pins refused: ${target.redact()}")
+            }
+            return null
+        }
+
+        /**
+         * The request to [target] with the header rules of the class documentation. The method and
+         * body stay: a GET remains a GET, and a POST gets here only for a 307/308 ([refusal]).
+         */
+        private fun followUp(
+            response: Response,
+            target: HttpUrl,
+            first: Request,
+            cookies: EngineRedirectCookies?,
+        ): Request {
+            val request = response.request
+            val builder = request.newBuilder().url(target)
+            if (!sameOrigin(request.url, target)) builder.removeHeader("Authorization").removeHeader("Proxy-Authorization")
+            // OkHttp writes Host only when the request has none; one from extraHeaders names the old authority.
+            if (request.url.canonicalHost() != target.canonicalHost() || request.url.port != target.port) builder.removeHeader("Host")
+            builder.removeHeader(COOKIE)
+            val values =
+                when {
+                    cookies != null -> cookies.followRedirect(request.url.toString(), response.headers("Set-Cookie"), target.toString())
+                    target.canonicalHost() == first.url.canonicalHost() -> first.headers(COOKIE)
+                    else -> emptyList()
+                }
+            for (value in values) builder.addHeader(COOKIE, value)
             return builder.build()
         }
+
+        private fun sameOrigin(
+            a: HttpUrl,
+            b: HttpUrl,
+        ): Boolean = a.scheme == b.scheme && a.canonicalHost() == b.canonicalHost() && a.port == b.port
+
+        /**
+         * The host as the cookie jar compares it: OkHttp keeps a trailing root dot and IPv4 forms
+         * such as `127.1`, which name the same host as `127.0.0.1`.
+         */
+        private fun HttpUrl.canonicalHost(): String = EngineHosts.canonical(host) ?: host
 
         private companion object {
             const val HTTP_TEMP_REDIRECT = 307
             const val HTTP_PERM_REDIRECT = 308
+            const val COOKIE = "Cookie"
 
             /** `RetryAndFollowUpInterceptor.MAX_FOLLOW_UPS`. */
             const val MAX_FOLLOW_UPS = 20
-            val REDIRECT_CODES = setOf(300, 301, 302, 303, HTTP_TEMP_REDIRECT, HTTP_PERM_REDIRECT)
+
+            /** The statuses Fetch and `URLSession` follow; a 300 has no single target. */
+            val REDIRECT_CODES = setOf(301, 302, 303, HTTP_TEMP_REDIRECT, HTTP_PERM_REDIRECT)
         }
     }
 
@@ -480,7 +633,14 @@ public class OkHttpEngineClients(
         /** Precedes the quoted start of a URL without a scheme in OkHttp's message. */
         private const val NO_SCHEME_QUOTE = "no scheme was found for "
 
-        private fun crossOrigin(url: HttpUrl) = ProtocolException("redirect to another origin refused: ${url.redact()}")
+        /** Whether [client] presents a client certificate configured through [TlsPolicy] (or Android's KeyChain). */
+        private fun hasClientCertificate(client: OkHttpClient): Boolean =
+            try {
+                client.sslSocketFactory is ClientCertificateSocketFactory
+            } catch (e: IllegalStateException) {
+                // A cleartext-only client has no TLS socket factory.
+                false
+            }
 
         /** `RealWebSocket.MAX_QUEUE_SIZE`: OkHttp's limit for queued outgoing WebSocket bytes. */
         private const val OKHTTP_MAX_QUEUE_BYTES = 16L * 1024 * 1024

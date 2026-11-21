@@ -62,8 +62,10 @@ public class EngineSocket(
     public val port: String
     private val path: String
     private val query: Map<String, String>
-    private val cookieJar: EngineCookieJar? = if (options.withCredentials) EngineCookieJar() else null
     private val clients: EngineClients? by lazy { options.clients ?: EngineClients.discover() }
+    private val cookieJar: EngineCookieJar? by lazy {
+        if (options.withCredentials) EngineCookieJar(java.time.Instant::now, clients?.publicSuffixes) else null
+    }
     private val logger = options.logger
 
     private var prevBufferLen = 0
