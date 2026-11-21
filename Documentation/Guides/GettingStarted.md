@@ -56,14 +56,14 @@ dependencyResolutionManagement {
 ```kotlin
 // app/build.gradle.kts (Android)
 dependencies {
-    implementation("io.github.kaeferfreund.socketio:socketio-android:17.1.0")
+    implementation("io.github.kaeferfreund.socketio:socketio-android:17.2.0")
 }
 ```
 
 ```kotlin
 // build.gradle.kts (JVM)
 dependencies {
-    implementation("io.github.kaeferfreund.socketio:socketio-okhttp:17.1.0")
+    implementation("io.github.kaeferfreund.socketio:socketio-okhttp:17.2.0")
 }
 ```
 

@@ -4,7 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [semantic versioning](https://semver.org/).
 
-## Unreleased
+## 17.2.0 — 2026-11-21
+
+Polling now follows redirects to other origins, like browsers and the Swift
+client, without carrying the first origin's credentials along, and the
+`withCredentials` cookie jar follows RFC 6265 and the relevant parts of RFC
+6265bis instead of the Node jar. Redirect and cookie handling now match the
+Swift client 18.0.0 rule for rule. The public API only gains additions (see
+API below). Read the behaviour changes before upgrading if your server
+redirects polling requests, sets cookies with `Domain`, `Path` or `Secure`, or
+if you send a `Cookie` in `extraHeaders`.
 
 ### Behaviour changes
 

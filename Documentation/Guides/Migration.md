@@ -16,7 +16,7 @@ implementation("io.socket:socket.io-client:2.1.2") {
 }
 
 // after
-implementation("io.github.kaeferfreund.socketio:socketio-android:17.1.0")
+implementation("io.github.kaeferfreund.socketio:socketio-android:17.2.0")
 ```
 
 The `org.json` exclusion is no longer needed: the library does not depend on
