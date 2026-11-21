@@ -95,12 +95,15 @@ Notes:
   sessions), set an OkHttp `CookieJar` with `okHttp { configure { cookieJar(…) } }`.
   The application's `CookieManager` is never used implicitly. A cookie whose name
   or value is not printable ASCII is ignored: it could not be sent back in a
-  request header. The jar keeps browser limits (180 cookies, 4096 bytes each) and
-  scopes cookies by RFC 6265 (`Domain`, `Path`, `Secure`, expiry), which matters
-  between transports with different paths and on redirects; see
-  [Redirects and cookies](#redirects-and-cookies) and
+  request header. The jar keeps browser limits (180 cookies per cookie domain,
+  3000 in all, 4096 bytes each) and follows RFC 6265 instead of the Node jar
+  (`Domain` with a public suffix list, `Path`, `Secure`, prefixes, expiry, longer
+  paths first), which matters between transports with different paths and on
+  redirects; see [Redirects and cookies](#redirects-and-cookies) and
   [Compatibility](Compatibility.md#engineio-connection-hardening).
 - `extraHeaders` holds one value per name. Join repeated values with `", "`.
+  A `Cookie` entry is the whole `Cookie` header on the server's host: the
+  `withCredentials` jar adds nothing there, and it is never sent to another host.
   Header names and values must be ASCII; a request with a value OkHttp refuses
   (or a malformed URL) fails with a transport error (`"xhr poll error"`,
   `"websocket error"`) and `connect_error`, never with an exception.
@@ -204,35 +207,41 @@ client, which removes network binding and traffic tagging.
 ## Redirects and cookies
 
 A polling request follows redirects like a browser or curl would, also to another
-origin (scheme, host or port). After 20 follow-ups the request fails. On every hop:
+origin (scheme, host or port): the statuses 301, 302, 303, 307 and 308, the ones
+Fetch and `URLSession` follow. A 300 is returned as the response. After 20
+follow-ups the request fails. On every hop:
 
-- **Method and body.** A poll (GET) follows every redirect status. A POST carries
+- **Method and body.** A poll (GET) follows each of these statuses. A POST carries
   the engine's packets, among them the CONNECT packet with the `auth` payload: it
   follows only a 307 or 308, which repeat it with its body, and only on the host
   of the server URL (any scheme or port). A redirect that would send the body to
-  another host, or turn the POST into a body-less GET (300–303), fails the
+  another host, or turn the POST into a body-less GET (301–303), fails the
   request, so packets are neither lost nor forwarded.
 - **Scheme.** HTTP→HTTPS is followed; HTTPS→HTTP never, neither from the current
-  hop nor when the first request used HTTPS. The redirect response then fails the
-  request with its status.
+  hop nor when the first request used HTTPS. The 3xx response is then returned as
+  the response, so the request fails with `"xhr poll error"` (or `"xhr post
+  error"`) carrying that status, without a `cause`.
 - **Authorization.** When the origin changes, `Authorization` and
   `Proxy-Authorization` are removed, also when they come from `extraHeaders`, and
   once removed they do not come back on a later hop to the first origin. An OkHttp
   `Authenticator` on your client also answers a 401 of a redirect target; make it
-  check the host before it adds credentials.
+  check the host before it adds credentials. Network interceptors
+  (`addNetworkInterceptor`) run on every hop, after these rules removed the
+  credentials, so one that adds credentials must check the host too.
 - **Host.** A `Host` header from `extraHeaders` is removed when the host or port
   changes, so the target sees its own authority.
-- **Cookies.** The `Cookie` header is rebuilt for the new URL. With
-  `withCredentials`, the engine's cookie jar contributes the cookies RFC 6265
-  allows there: a cookie without `Domain` goes to the host that set it (any port),
-  a cookie with `Domain=example.com` also to its subdomains, `Path` must match on a
-  `/` boundary, `Secure` cookies go over HTTPS only, and expired cookies are
-  dropped. `Set-Cookie` headers of a redirect response are stored first, so a
-  load balancer that sets a cookie and redirects is answered with it. A `Cookie`
-  entry in `extraHeaders` is sent as written to the host of the server URL, on any
-  scheme or port, and never to another host. Hosts are compared in the form OkHttp
-  writes them (IDNA ASCII, compressed IPv6). A cookie jar on your OkHttp client
-  replaces this `Cookie` header with its own cookies when it has any for the URL.
+- **Cookies.** The one `Cookie` header of a request is rebuilt for the new URL.
+  With `withCredentials`, the engine's cookie jar contributes the cookies RFC 6265
+  allows there (see the table below). The `Set-Cookie` headers of every hop are
+  stored the moment its response arrives, also when the redirect is then refused
+  or a later hop fails, so a load balancer that sets a cookie and redirects is
+  answered with it. A `Cookie` entry in `extraHeaders` is the whole `Cookie`
+  header on the host of the server URL, on any scheme or port: the jar adds
+  nothing there. It is never sent to another host, which gets the jar's cookies
+  that match it. Hosts are compared in canonical form: IDNA ASCII, lowercase,
+  without a trailing dot, IPv4 as four decimal octets (`127.1` is `127.0.0.1`),
+  IPv6 compressed. A cookie jar on your OkHttp client replaces this `Cookie`
+  header with its own cookies when it has any for the URL.
 - **Other headers follow.** Every other `extraHeaders` entry (an `X-Api-Key`, a
   tenant id) is sent to the redirect target, as browsers, curl and the Swift client
   do. Send tokens that must stay with your server as `Authorization`.
@@ -240,8 +249,11 @@ origin (scheme, host or port). After 20 follow-ups the request fails. On every h
   `TlsPolicy` (or `withKeyChainAlias` on Android), a redirect to another origin is
   refused before any connection is made there: the certificate is presented to the
   origin of the server URL only. A certificate configured directly on your OkHttp
-  client (its own `sslSocketFactory`) is not recognised; use `TlsPolicy`, or turn
-  redirects off with `followRedirects(false)`.
+  client (its own `sslSocketFactory`) is recognised only once a server of the chain
+  asked for it and the client presented it; from then on the chain stays within
+  the origin. Before that, a redirect to another origin is followed and that origin
+  can ask for the certificate, so use `TlsPolicy`, or turn redirects off with
+  `followRedirects(false)`.
 - **Certificate pins.** With pins configured (`TlsPolicy` or the base client's
   `CertificatePinner`, also wildcard patterns), a redirect from a pinned host to
   another host is followed only when a pin covers that host too, so pinning is
@@ -250,21 +262,31 @@ origin (scheme, host or port). After 20 follow-ups the request fails. On every h
   Android's Network Security Config are not visible to the client and do not
   restrict redirects; declare them in `TlsPolicy` as well.
 
-A refused redirect fails the request with `"xhr poll error"` (or `"xhr post error"`
-for a POST), whose `cause` is a `ProtocolException` naming the reason. The
-WebSocket handshake follows no redirect.
+Any other refused redirect (a POST, a client certificate, pins, more than 20
+follow-ups) fails the request with `"xhr poll error"` (or `"xhr post error"` for a
+POST), whose `cause` is a `ProtocolException` naming the reason. The WebSocket
+handshake follows no redirect.
 
-With `withCredentials`, cookies are scoped like in a browser:
+With `withCredentials`, cookies are scoped like in a browser, by RFC 6265 (and
+RFC 6265bis where noted) instead of the Node jar of the JavaScript client, which
+sends every cookie to every request:
 
 | Attribute | Effect |
 | --- | --- |
-| no `Domain` | Host-only: the exact host that set it (lowercase, without trailing dot), any port |
-| `Domain=example.com` (a leading dot is ignored) | `example.com` and its subdomains, also when `example.com` set it; rejected unless the setting host is in that domain and for a single label (`Domain=com`). On an IP address host only the address itself is accepted, as a host-only cookie. There is no public suffix list, so `Domain=co.uk` set by `shop.co.uk` is accepted |
-| `Path` | Must match the request path on a `/` boundary of the percent-encoded path (`Path=/a` matches `/a` and `/a/b`, not `/ab` or `/a%2Fb/`); without it, the directory of the request path. On the host and path that set it, a cookie is always sent back, as in JavaScript |
-| `Secure` | Sent over HTTPS/WSS only, and ignored when set over plain HTTP; plain HTTP cannot replace or delete it either. Loopback hosts (`localhost`, `127.0.0.1`, `::1`) count as secure, as in browsers |
+| no `Domain` | Host-only: the exact host that set it, any port |
+| `Domain=example.com` (a leading dot is ignored) | `example.com` and its subdomains, also when `example.com` set it. Rejected when the setting host is not in that domain, or when the domain is a public suffix (`com`, `co.uk`, `github.io`) by OkHttp's public suffix list (without `socketio-okhttp`, single labels only); a public suffix or single label equal to the setting host (`Domain=localhost` on `localhost`) makes a host-only cookie instead. On an IP address host only the address itself is accepted, as a host-only cookie |
+| `Path` | Must match the request path on a `/` boundary of the percent-encoded path (`Path=/a` matches `/a` and `/a/b`, not `/ab` or `/a%2Fb/`), also on the URL that set the cookie; without it, the directory of the request path |
+| `Secure` | Sent over HTTPS/WSS only, and ignored when set over plain HTTP; plain HTTP cannot replace or delete a live one either (RFC 6265bis). Loopback hosts (`localhost`, `127.0.0.0/8`, `::1`; not names under `localhost`) count as secure, as in browsers |
+| `__Secure-`, `__Host-` name prefix | `__Secure-` needs `Secure`; `__Host-` needs `Secure`, no `Domain` and `Path=/` (RFC 6265bis, in any case). Otherwise the cookie is ignored |
 | `Expires`, `Max-Age` | An expired cookie is no longer sent; `Max-Age` counts from the response that set it, also on a redirect |
 
-Of cookies with the same name, the one with the longer `Path` is sent first (RFC 6265).
+Attributes end at any `;` and their names are case-insensitive. A cookie replaces
+the one with the same name, domain, host-only flag and path (RFC 6265bis), so a
+sibling host's `Domain` cookie never replaces a host-only one. The `Cookie` header
+lists longer paths first, and cookies with paths of equal length in the order they
+were created (RFC 6265). The jar keeps at most 180 cookies per cookie domain and
+3000 in all; a full domain makes room with its own oldest cookie, so one host
+cannot evict another's cookies.
 
 ## TLS
 

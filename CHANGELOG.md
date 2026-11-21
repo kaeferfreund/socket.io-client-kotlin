@@ -10,45 +10,69 @@ All notable changes to this project are documented here. The format follows
 
 - **Polling follows redirects to other origins, without the first origin's
   credentials.** 17.1.0 refused every polling redirect to another scheme, host
-  or port. Polling GETs now follow them like a browser, curl and the Swift
-  client, with at most 20 follow-ups:
+  or port. Polling GETs now follow 301, 302, 303, 307 and 308 like a browser,
+  curl and the Swift client, with at most 20 follow-ups; a 300 is returned as
+  the response, as Fetch and `URLSession` do:
   - a POST, whose body carries the packets (the CONNECT packet with the `auth`
     payload among them), follows only a 307 or 308, which repeat it with its
     body, and only on the host of the server URL (any scheme or port). A
-    redirect of a POST to another host fails the request, and so does a 300–303,
+    redirect of a POST to another host fails the request, and so does a 301–303,
     which would turn the POST into a body-less GET: 17.1.0 did that on the same
     origin, losing the packets while the write reported success;
-  - on an origin change, `Authorization` and `Proxy-Authorization` are removed,
-    and a `Host` header from `extraHeaders` when the host or port changes;
-  - the `Cookie` header is rebuilt for every hop: cookies of the
-    `withCredentials` jar that RFC 6265 allows for the new URL, and a `Cookie`
-    entry of `extraHeaders` only on the host of the server URL (any scheme or
-    port). `Set-Cookie` headers of redirect responses are stored before the
-    redirect is followed;
-  - HTTP→HTTPS is followed, HTTPS→HTTP never (also not after an HTTP→HTTPS hop);
+  - on an origin change, `Authorization` and `Proxy-Authorization` are removed
+    (also when the chain returns to the first origin), and a `Host` header from
+    `extraHeaders` when the host or port changes;
+  - the `Cookie` header is rebuilt for every hop: the cookies of the
+    `withCredentials` jar that RFC 6265 allows for the new URL, or, on the host
+    of the server URL (any scheme or port), a `Cookie` entry of `extraHeaders`
+    instead. The `Set-Cookie` headers of every hop are stored in the jar the
+    moment the response arrives, also when the redirect is refused or a later
+    hop fails;
+  - HTTP→HTTPS is followed, HTTPS→HTTP never (also not after an HTTP→HTTPS
+    hop): the 3xx is returned as the response and fails the request with its
+    status;
   - with a client certificate configured through `TlsPolicy` (or
-    `withKeyChainAlias`), redirects to another origin are still refused, and
-    from a host certificate pins cover, a redirect to another host is refused
-    unless a pin covers it too. Both are decided before any connection to the
-    target;
+    `withKeyChainAlias`), or set on your OkHttp client and presented on a hop,
+    redirects to another origin are still refused, and from a host certificate
+    pins cover, a redirect to another host is refused unless a pin covers it
+    too. Both are decided before any connection to the target;
   - other headers, such as an API key in `extraHeaders`, follow the redirect.
     Send tokens that must stay with your server as `Authorization`.
   The WebSocket handshake still follows no redirect. See
   [Redirects and cookies](Documentation/Guides/Configuration.md#redirects-and-cookies).
-- **The `withCredentials` cookie jar is scoped by RFC 6265.** Cookies stored
-  from responses go back only where their `Domain` (host-only without it),
-  `Path`, `Secure` flag and expiry allow; ports do not scope them. A `Domain`
-  the server's host is not part of and a single-label `Domain` reject the
-  cookie; on an IP address host only `Domain` equal to that address is
-  accepted, as a host-only cookie. There is no public suffix list:
-  `Domain=co.uk` set by a host under `co.uk` is accepted. A `Secure` cookie is
-  sent over HTTPS/WSS only and ignored when set over plain HTTP, except on
-  loopback hosts, which count as secure as in browsers; a response over plain
-  HTTP cannot replace or delete a `Secure` cookie. A cookie now replaces only the
-  one with the same name, domain and path; of cookies with the same name, the
-  longer path is sent first. Hosts are compared in the form OkHttp uses (IDNA
-  ASCII, compressed IPv6), so cookies of an internationalised or IPv6 server
-  survive a redirect to the same host.
+- **The `withCredentials` cookie jar follows RFC 6265 instead of the Node
+  jar.** Cookies stored from responses go back only where their `Domain`
+  (host-only without it), `Path`, `Secure` flag and expiry allow; ports do not
+  scope them:
+  - a `Domain` the server's host is not part of, or a public suffix by OkHttp's
+    public suffix list (`com`, `co.uk`, `github.io`), rejects the cookie, or
+    makes it host-only when it names the host itself. On an IP address host
+    only `Domain` equal to that address is accepted, as a host-only cookie;
+  - `Path` is matched strictly, also on the URL that set the cookie: 17.1.0, like
+    the Node jar, sent a cookie back where it was set whatever its `Path`;
+  - a `Secure` cookie is sent over HTTPS/WSS only and ignored when set over
+    plain HTTP, except on loopback hosts (`localhost`, `127.0.0.0/8`, `::1`),
+    which count as secure as in browsers. A response over plain HTTP cannot
+    replace or delete a live `Secure` cookie;
+  - `__Secure-` and `__Host-` cookies need the attributes their prefix asks for
+    (RFC 6265bis);
+  - a cookie replaces only the one with the same name, domain, host-only flag
+    and path, so a sibling host's `Domain` cookie never replaces a host-only one;
+  - the `Cookie` header lists longer paths first, then the order of creation;
+    17.1.0, like the Node jar, used the order of creation only;
+  - attributes end at any `;` and their names are case-insensitive, `Expires`
+    and `Max-Age` included; the Node jar splits on `"; "` and knows one spelling;
+  - the 180-cookie limit applies per cookie domain, with 3000 in all, so one
+    host cannot evict the cookies of another;
+  - hosts are compared in canonical form: IDNA ASCII, lowercase, without a
+    trailing dot, IPv4 as four decimal octets (`127.1` is `127.0.0.1`), IPv6
+    compressed.
+- **An explicit `Cookie` in `extraHeaders` is the whole `Cookie` header on the
+  server's host.** With `withCredentials`, 17.1.0 sent it next to the jar's
+  cookies in a second `Cookie` header; the Node jar replaces it with its own.
+  Every request now carries one `Cookie` header (RFC 6265): on the server's host
+  (any scheme or port) the explicit value without the jar's cookies, on any
+  other host the jar's cookies that match it, never the explicit value.
 
 Migration:
 
@@ -59,27 +83,46 @@ Migration:
 - Move tokens from custom headers to `Authorization` if they must not reach a
   redirect target; custom `extraHeaders` follow redirects.
 - **A client certificate set directly on your OkHttp client** (an own
-  `sslSocketFactory` with a key manager) is not recognised: 17.1.0 refused every
-  redirect to another origin, now polling follows it and the target can ask for
-  the certificate. Configure it through `TlsPolicy.withClientCertificate`, or
-  turn redirects off with `followRedirects(false)`.
+  `sslSocketFactory` with a key manager) is recognised only once a server of the
+  chain asked for it: 17.1.0 refused every redirect to another origin, now
+  polling follows one that comes before that, and its target can ask for the
+  certificate. Configure it through `TlsPolicy.withClientCertificate`, or turn
+  redirects off with `followRedirects(false)`.
 - **Pins from Android's Network Security Config** are not visible to the
-  client either: with them, redirects to unpinned hosts are now followed. Declare
-  the pins in `TlsPolicy` too, or turn redirects off.
+  client: with them, redirects to unpinned hosts are now followed. Declare the
+  pins in `TlsPolicy` too, or turn redirects off.
 - **An OkHttp `Authenticator`** on your client is also asked when a redirect
-  target answers 401; make it check the host before it adds credentials.
-- A server that answers a polling POST with 300–303 now gets a failed request
-  instead of a GET; answer with 307/308 or not at all.
-- A server on plain HTTP (other than `localhost`) that sets `Secure` cookies no
-  longer gets them back; drop `Secure` there or serve over HTTPS. A server that
-  sets `Domain` to a host its own name is not part of no longer gets the cookie.
+  target answers 401, and **network interceptors** (`addNetworkInterceptor`)
+  run on every hop; make them check the host before they add credentials.
+- A server that answers a polling POST with 301–303 now gets a failed request
+  instead of a GET; answer with 307/308 or not at all. A 300 is no longer
+  followed.
+- **With `withCredentials` and a `Cookie` in `extraHeaders`**, the cookies the
+  server sets are no longer sent to its host. Include them in your header, or
+  drop the header and let the jar send them.
+- A cookie whose `Path` does not cover the request path is no longer sent back
+  to the URL that set it. Have the server set a `Path` that covers the paths of
+  your transports, usually `Path=/`.
+- A server on plain HTTP (other than loopback hosts) that sets `Secure` cookies
+  no longer gets them back; drop `Secure` there or serve over HTTPS. A server
+  that sets `Domain` to a host its own name is not part of, or to a public
+  suffix, no longer gets the cookie, nor does one that sets a `__Secure-` or
+  `__Host-` cookie without the attributes its prefix asks for.
 
 ### API
 
 - `EngineRedirectCookies` and `EngineHttpRequest.redirectCookies`: the engine
   hands every polling request the cookies it may carry on redirects. Additive:
   the existing `EngineHttpRequest` constructor is unchanged, and a custom
-  `EngineHttpClient` that ignores the new property keeps working.
+  `EngineHttpClient` keeps working as before. One that follows redirects itself
+  must call `redirectCookies.followRedirect` for every hop (and
+  `redirectRefused` for a redirect it refuses), so that cookies are stored for
+  the URL that set them and every hop gets the cookies that match it.
+- `EnginePublicSuffixes`, `EngineClients.publicSuffixes` with a constructor that
+  takes it, and `OkHttpEngineClients.isPublicSuffix`: the public suffix list of
+  the `withCredentials` cookie jar. Additive: the two-argument `EngineClients`
+  constructor takes it from its HTTP or WebSocket client, so
+  `OkHttpEngineClients` supplies OkHttp's list wherever it is used.
 
 ## 17.1.0 — 2026-11-20
 

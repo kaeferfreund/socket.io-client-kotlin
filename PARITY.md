@@ -146,14 +146,24 @@ and do not change a certified assertion:
   one is tried; JavaScript only drops its listeners. Unlike JavaScript, this client
   rejects invalid handshakes, which can arrive on an already open polling
   transport that would otherwise keep polling.
-- Polling follows redirects to other origins like Node's client, but on an
-  origin change it drops `Authorization` and `Proxy-Authorization` and rebuilds
-  the `Cookie` header from the RFC 6265-scoped cookie jar (an explicit `Cookie`
-  from `extraHeaders` only to the server's host); a POST body follows a 307/308
-  on the server's host only and a POST never becomes a GET; HTTPS→HTTP is never
-  followed, a configured client certificate keeps redirects within the origin,
-  and from a pinned host pins keep them on pinned hosts. The WebSocket handshake follows none. Node's
-  polling client follows every redirect with the same headers.
+- Polling follows 301, 302, 303, 307 and 308 to other origins, but on an origin
+  change it drops `Authorization` and `Proxy-Authorization` and rebuilds the
+  `Cookie` header from the cookie jar (an explicit `Cookie` from `extraHeaders`
+  only to the server's host); a POST body follows a 307/308 on the server's host
+  only and a POST never becomes a GET; HTTPS→HTTP is never followed, a client
+  certificate keeps redirects within the origin, and from a pinned host pins keep
+  them on pinned hosts. The WebSocket handshake follows none. Node's polling
+  client (`xmlhttprequest-ssl`) follows only 302, 303 and 307, to any origin,
+  keeps every header and does not send a POST body again.
+- The `withCredentials` cookie jar follows RFC 6265 instead of the Node jar,
+  which sends every cookie to every request in creation order: `Domain` with
+  OkHttp's public suffix list, `Path` matched strictly (also on the URL that set
+  the cookie), `Secure`, the `__Secure-`/`__Host-` prefixes, a store key with
+  the host-only flag, longer paths first in the `Cookie` header, attributes split
+  on any `;` with case-insensitive names, and per-domain limits. An explicit
+  `Cookie` from `extraHeaders` is the whole `Cookie` header on the server's host,
+  where the Node jar replaces it. `KT-OKHTTP` and `KT-ENGINE` name the evidence
+  tests; the upstream cookie assertions (`JS-178` to `JS-182`) hold unchanged.
 - A hostile server or URL is handled more strictly than in JavaScript: URL parsing
   (brackets, scheme case, relative paths, user info), Engine.IO upgrades, heartbeats,
   cookies and closing, and Socket.IO acknowledgements, namespace CONNECTs and
