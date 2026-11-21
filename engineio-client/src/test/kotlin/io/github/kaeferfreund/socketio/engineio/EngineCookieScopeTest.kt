@@ -34,6 +34,75 @@ class EngineCookieScopeTest {
         assertNull(jar.cookieHeader("http://example.test.evil.test/socket.io/"))
     }
 
+    // RFC 6265 5.3 step 6: only a missing Domain makes a cookie host-only; the apex that names
+    // itself reaches its subdomains, as a load balancer redirecting to a node expects.
+    @Test
+    fun aDomainEqualToTheSettingHostReachesItsSubdomains() {
+        val jar = jar("https://example.test/socket.io/", "lb=1; Domain=example.test; Path=/", "dot=2; Domain=.EXAMPLE.test; Path=/")
+        for (host in listOf("example.test", "node.example.test", "deep.node.example.test")) {
+            assertEquals("lb=1; dot=2", jar.cookieHeader("https://$host/socket.io/"), host)
+        }
+        assertNull(jar.cookieHeader("https://otherexample.test/socket.io/"))
+    }
+
+    @Test
+    fun aDomainThatIsNoHostNameRejectsTheCookieAndALoneDotIsIgnored() {
+        val jar = jar("http://node1.example.test/", "dots=1; Domain=..", "brackets=2; Domain=[]", "dot=3; Domain=.", "empty=4; Domain=")
+        assertEquals(listOf("dot", "empty"), jar.current.map { it.name })
+        assertNull(jar.cookieHeader("http://sub.node1.example.test/"))
+    }
+
+    // OkHttp writes redirect URLs with IDNA ASCII hosts and compressed IPv6; the jar compares the
+    // same canonical form, whichever spelling the engine URL used.
+    @Test
+    fun hostsCompareInTheirCanonicalForm() {
+        val idn = jar("http://Bücher.example/", "a=1")
+        assertEquals("a=1", idn.cookieHeader("http://xn--bcher-kva.example/"))
+        assertEquals("a=1", idn.cookieHeader("http://bücher.example/"))
+        val v6 = jar("http://[0:0:0:0:0:0:0:1]:3000/", "b=2; Secure")
+        assertEquals("b=2", v6.cookieHeader("http://[::1]:3000/"))
+        val mapped = jar("http://[::ffff:127.0.0.1]/", "c=3")
+        assertEquals("c=3", mapped.cookieHeader("http://127.0.0.1/"))
+        assertEquals("d=4", jar("http://[2001:DB8:0:0:1:0:0:1]/", "d=4").cookieHeader("http://[2001:db8::1:0:0:1]/"))
+    }
+
+    // WHATWG: a host whose last label is a number is an IPv4 address, never a domain.
+    @Test
+    fun aHostEndingInANumberIsAnAddress() {
+        assertEquals(emptyList<EngineCookie>(), jar("http://1.2.3/", "a=1; Domain=2.3").current)
+        assertEquals(emptyList<EngineCookie>(), jar("http://a.0x7f/", "b=2; Domain=0x7f").current)
+    }
+
+    // RFC 6265 5.4: servers rely on the longer path coming first.
+    @Test
+    fun cookiesOfTheSameNameAreSentLongerPathFirst() {
+        val jar = EngineCookieJar { now }
+        jar.parseCookies(listOf("sid=global; Path=/"), "http://h.example/")
+        jar.parseCookies(listOf("sid=socket; Path=/socket.io"), "http://h.example/socket.io/")
+        assertEquals("sid=socket; sid=global", jar.cookieHeader("http://h.example/socket.io/"))
+        assertEquals("sid=global", jar.cookieHeader("http://h.example/other/"))
+    }
+
+    // RFC 6265bis 5.7: plain HTTP must not overwrite or delete what HTTPS set as Secure.
+    @Test
+    fun plainHttpCannotReplaceOrDeleteASecureCookie() {
+        val jar = EngineCookieJar { now }
+        jar.parseCookies(listOf("sid=real; Secure; Path=/"), "https://node1.example.test/")
+        jar.parseCookies(listOf("sid=forged; Path=/"), "http://node1.example.test/")
+        jar.parseCookies(listOf("sid=forged; Domain=example.test; Path=/socket.io"), "http://node2.example.test/socket.io/")
+        assertEquals("sid=real", jar.cookieHeader("https://node1.example.test/socket.io/"))
+        jar.parseCookies(listOf("sid=; Max-Age=0; Path=/"), "http://node1.example.test/")
+        assertEquals("sid=real", jar.cookieHeader("https://node1.example.test/"))
+        // Another name, or a non-overlapping host, is not affected.
+        jar.parseCookies(listOf("other=1; Path=/"), "http://node1.example.test/")
+        jar.parseCookies(listOf("sid=elsewhere; Path=/"), "http://evil.test/")
+        assertEquals("other=1", jar.cookieHeader("http://node1.example.test/"))
+        assertEquals("sid=elsewhere", jar.cookieHeader("http://evil.test/"))
+        // HTTPS still replaces it.
+        jar.parseCookies(listOf("sid=new; Secure; Path=/"), "https://node1.example.test/")
+        assertEquals("sid=new; other=1", jar.cookieHeader("https://node1.example.test/"))
+    }
+
     @Test
     fun aDomainAttributeThatDoesNotMatchTheHostRejectsTheCookie() {
         val jar =

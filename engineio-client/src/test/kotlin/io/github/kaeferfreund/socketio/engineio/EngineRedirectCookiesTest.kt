@@ -5,7 +5,9 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Test
+import java.time.Instant
 
 /**
  * The cookies a polling request carries across redirects: the HTTP client asks the request's
@@ -104,6 +106,34 @@ class EngineRedirectCookiesTest {
             assertEquals(listOf("lb=node2; n2=1"), later.redirect("http://node2.example.test/engine.io/"))
             s.executor.shutdown()
         }
+
+    // A long poll can answer long after the redirect: Max-Age counts from the redirect response.
+    @Test
+    fun aRedirectCookieExpiresCountedFromItsArrival() {
+        val start = Instant.parse("2026-01-01T00:00:00Z")
+        var clock = start
+        val jar = EngineCookieJar { clock }
+        val cookies = RequestCookies("http://a.example/socket.io/", emptyList(), jar.copy())
+        assertEquals(listOf("lb=1"), cookies.followRedirect("http://a.example/socket.io/", listOf("lb=1; Max-Age=10; Path=/"), "http://a.example/next/"))
+        // Applied 30 s later, it expired 20 s ago; counted from then it would live 10 s more.
+        clock = start.plusSeconds(30)
+        cookies.applyTo(jar)
+        assertNull(jar.cookieHeader("http://a.example/"))
+    }
+
+    // OkHttp reports `http://xn--bcher-kva.example/...` for an engine URL `http://bücher.example`.
+    @Test
+    fun aSameHostRedirectKeepsTheCookiesWhateverSpellingTheHostHas() {
+        val jar = EngineCookieJar()
+        jar.parseCookies(listOf("io=sticky; Path=/"), "http://bücher.example/socket.io/")
+        val cookies = RequestCookies("http://bücher.example/socket.io/", listOf("app=1"), jar.copy())
+        assertEquals(
+            listOf("app=1", "io=sticky"),
+            cookies.followRedirect("http://xn--bcher-kva.example/socket.io/", emptyList(), "http://xn--bcher-kva.example/socket.io/?moved=1"),
+        )
+        val v6 = RequestCookies("http://[0:0:0:0:0:0:0:1]:3000/", listOf("app=1"), null)
+        assertEquals(listOf("app=1"), v6.followRedirect("http://[::1]:3000/", emptyList(), "http://[::1]:3000/?moved=1"))
+    }
 
     @Test
     fun withoutWithCredentialsOnlyTheExplicitHeaderFollowsAndOnlyToTheSameHost() =

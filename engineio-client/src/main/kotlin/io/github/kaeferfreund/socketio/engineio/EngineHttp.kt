@@ -11,6 +11,11 @@ public interface EngineHttpClient {
     /**
      * Starts [request]. Exactly one callback method runs, on any thread,
      * unless the returned handle is cancelled first (then none needs to run).
+     *
+     * A client that follows redirects must ask [EngineHttpRequest.redirectCookies] for every
+     * hop: the engine learns the URL the response came from only through it, and stores that
+     * response's cookies for it. It should not repeat a POST body on another host, nor turn a
+     * POST into a GET: the body carries the engine's packets.
      */
     public fun execute(
         request: EngineHttpRequest,
@@ -61,12 +66,13 @@ public class EngineHttpRequest(
  * that request with the returned `Cookie` header values instead of the ones it carried so far.
  * The engine answers from its cookie jar by RFC 6265 rules (domain, host-only, path, `Secure`,
  * expiry) for the new URL; a `Cookie` header from `extraHeaders` only goes to the host of the
- * first request. A client that follows no redirects never calls it.
+ * first request. A client that follows no redirects never calls it; one that follows them must,
+ * see [EngineHttpClient.execute].
  *
  * Called on the client's thread, one call at a time, before the request's callback runs; the
  * engine applies the cookies the redirect responses set to its jar when the response arrives.
  */
-public interface EngineRedirectCookies {
+public fun interface EngineRedirectCookies {
     /**
      * The redirect response for [responseUrl] carried [setCookieHeaders] (the values of its
      * `Set-Cookie` headers) and the client follows it to [nextUrl]. Stores those cookies for
