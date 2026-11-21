@@ -27,7 +27,8 @@
   <a href="Documentation/README.md">Documentation</a> ·
   <a href="#why-this-library">Why this library?</a> ·
   <a href="Documentation/Guides/Migration.md">Migration from Java</a> ·
-  <a href="PARITY.md">JavaScript parity</a>
+  <a href="PARITY.md">JavaScript parity</a> ·
+  <a href="https://github.com/kaeferfreund/socket.io-client-swift">Swift &amp; iOS version</a>
 </p>
 
 ---
