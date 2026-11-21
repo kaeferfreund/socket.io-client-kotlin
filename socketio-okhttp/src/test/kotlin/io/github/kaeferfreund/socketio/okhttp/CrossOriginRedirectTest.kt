@@ -23,9 +23,9 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 
 /**
- * Polling redirects to other origins: followed with OkHttp's method rules, without credentials
- * that belong to the first origin, with cookies rebuilt per hop, and refused where following
- * would downgrade TLS, lose certificate pinning or present a client certificate elsewhere.
+ * Polling redirects to other origins: followed without credentials that belong to the first
+ * origin, with cookies rebuilt per hop, and refused where following would lose or forward a
+ * POST body, downgrade TLS, lose certificate pinning or present a client certificate elsewhere.
  * Every test host resolves to the loopback MockWebServers.
  */
 class CrossOriginRedirectTest {
@@ -221,40 +221,147 @@ class CrossOriginRedirectTest {
         assertEquals(emptyList<String>(), a.take().headers.values("Cookie"))
     }
 
+    private fun post(url: String) =
+        EngineHttpRequest(
+            "POST",
+            url,
+            listOf("Content-type" to "text/plain;charset=UTF-8", "Authorization" to "Bearer token"),
+            "40{\"token\":\"secret\"}",
+            null,
+            Long.MAX_VALUE,
+            RecordingCookies(),
+        )
+
+    // The body carries the engine's packets, the CONNECT packet with the auth payload among them:
+    // a 307/308 repeats it on the host of the server URL (any port or scheme), never elsewhere.
     @Test
-    fun a307RepeatsThePostAndItsBodyAcrossOrigins() {
+    fun a307Or308RepeatsThePostOnlyOnTheFirstHost() {
         val a = server()
         val b = server()
-        a.enqueue(redirect(307, b.at("node2.example.test")))
-        b.enqueue(ok("posted"))
-        val post =
-            EngineHttpRequest(
-                "POST",
-                a.at("node1.example.test"),
-                listOf("Content-type" to "text/plain;charset=UTF-8"),
-                "4hi",
-                null,
-                Long.MAX_VALUE,
-                RecordingCookies(),
-            )
-        assertEquals("posted", execute(clients(), post).getOrThrow().body)
-        val repeated = b.take()
-        assertEquals("POST", repeated.method)
-        assertEquals("4hi", repeated.body!!.utf8())
-        assertEquals("text/plain;charset=UTF-8", repeated.headers["Content-Type"])
+        val foreign = server()
+        for (code in listOf(307, 308)) {
+            a.enqueue(redirect(code, b.at("node1.example.test")))
+            b.enqueue(ok("posted"))
+            assertEquals("posted", execute(clients(), post(a.at("node1.example.test"))).getOrThrow().body)
+            val repeated = b.take()
+            assertEquals("POST", repeated.method)
+            assertEquals("40{\"token\":\"secret\"}", repeated.body!!.utf8())
+            assertEquals("text/plain;charset=UTF-8", repeated.headers["Content-Type"])
+            assertNull(repeated.headers["Authorization"])
+            a.enqueue(redirect(code, foreign.at("node2.example.test")))
+            val result = execute(clients(), post(a.at("node1.example.test")))
+            assertTrue(result.exceptionOrNull() is ProtocolException, "$code: $result")
+        }
+        assertEquals(0, foreign.requestCount)
+        assertTrue(foreign.port !in connected)
+    }
+
+    // OkHttp would continue a POST as a body-less GET: the packets would be lost while the write
+    // reports success. The request fails instead, also on the same origin.
+    @Test
+    fun aPostIsNeverTurnedIntoAGet() {
+        val a = server()
+        val b = server()
+        for (code in listOf(300, 301, 302, 303)) {
+            a.enqueue(redirect(code, b.at("node1.example.test")))
+            val result = execute(clients(), post(a.at("node1.example.test")))
+            assertTrue(result.exceptionOrNull() is ProtocolException, "$code: $result")
+            a.enqueue(redirect(code, "/socket.io/?moved=$code"))
+            assertTrue(execute(clients(), post(a.at("node1.example.test"))).exceptionOrNull() is ProtocolException, "$code")
+        }
+        assertEquals(0, b.requestCount)
+        assertEquals(8, a.requestCount)
     }
 
     @Test
-    fun a303TurnsThePostIntoAGetAcrossOrigins() {
+    fun aGetFollowsEveryRedirectStatus() {
         val a = server()
         val b = server()
-        a.enqueue(redirect(303, b.at("node2.example.test")))
-        b.enqueue(ok("got"))
-        val post = EngineHttpRequest("POST", a.at("node1.example.test"), emptyList(), "4hi", null, Long.MAX_VALUE, RecordingCookies())
-        assertEquals("got", execute(clients(), post).getOrThrow().body)
-        val converted = b.take()
-        assertEquals("GET", converted.method)
-        assertEquals(0L, converted.bodySize)
+        for (code in listOf(300, 301, 302, 303, 307, 308)) {
+            a.enqueue(redirect(code, b.at("node2.example.test")))
+            b.enqueue(ok("$code"))
+            assertEquals("$code", execute(clients(), get(a.at("node1.example.test"))).getOrThrow().body)
+            assertEquals("GET", b.take().method)
+        }
+    }
+
+    // Each hop starts from the previous one, so what was removed on the way out stays removed.
+    @Test
+    fun authorizationDoesNotComeBackWhenTheChainReturnsToTheFirstOrigin() {
+        val a = server()
+        val b = server()
+        a.enqueue(redirect(302, b.at("evil.test")))
+        b.enqueue(redirect(302, a.at("node1.example.test", "/socket.io/?back=1")))
+        a.enqueue(ok())
+        execute(clients(), get(a.at("node1.example.test"))).getOrThrow()
+        assertEquals("Bearer token", a.take().headers["Authorization"])
+        b.take()
+        val back = a.take()
+        assertNull(back.headers["Authorization"])
+        assertNull(back.headers["Proxy-Authorization"])
+        assertEquals("key", back.headers["X-Api-Key"])
+    }
+
+    // OkHttp writes Host only when the request has none, so one from extraHeaders would name the
+    // old authority at the new host.
+    @Test
+    fun anExplicitHostHeaderStaysWithItsAuthority() {
+        val a = server()
+        val b = server()
+        a.enqueue(redirect(302, "/socket.io/?moved=1"))
+        a.enqueue(redirect(302, b.at("node2.example.test")))
+        b.enqueue(ok())
+        execute(clients(), get(a.at("node1.example.test"), listOf("Host" to "vhost.example.test"))).getOrThrow()
+        assertEquals("vhost.example.test", a.take().headers["Host"])
+        assertEquals("vhost.example.test", a.take().headers["Host"])
+        assertEquals("node2.example.test:${b.port}", b.take().headers["Host"])
+    }
+
+    // A callback of the application's own that fails ends the request like a network error,
+    // instead of escaping on OkHttp's thread and leaving the redirect response open.
+    @Test
+    fun aFailingRedirectCallbackFailsTheRequest() {
+        val a = server()
+        val b = server()
+        val throwing = RecordingCookies { error("broken") }
+        val invalid = RecordingCookies { listOf("a=1\nb") }
+        for (cookies in listOf(throwing, invalid)) {
+            a.enqueue(redirect(302, b.at("node2.example.test")))
+            val result = execute(clients(), get(a.at("node1.example.test"), cookies = cookies))
+            assertTrue(result.exceptionOrNull() is java.io.IOException, result.toString())
+        }
+        assertEquals(0, b.requestCount)
+    }
+
+    // Cancelling the request between hops sends no further hop.
+    @Test
+    fun cancellingDuringARedirectChainStopsIt() {
+        val a = server()
+        val b = server()
+        val c = server()
+        a.enqueue(redirect(302, b.at("node2.example.test")))
+        b.enqueue(redirect(302, c.at("node3.example.test")).newBuilder().headersDelay(1, TimeUnit.SECONDS).build())
+        val outcome = CompletableFuture<Result<EngineHttpResponse>>()
+        val call =
+            clients().execute(
+                get(a.at("node1.example.test")),
+                object : EngineHttpCallback {
+                    override fun onResponse(response: EngineHttpResponse) {
+                        outcome.complete(Result.success(response))
+                    }
+
+                    override fun onFailure(error: Throwable) {
+                        outcome.complete(Result.failure(error))
+                    }
+                },
+            )
+        b.take()
+        call.cancel()
+        // OkHttp reports the cancellation once the interceptor chain has ended, so no hop follows.
+        val result = outcome.get(10, TimeUnit.SECONDS)
+        assertTrue(result.exceptionOrNull() is java.io.IOException, result.toString())
+        assertEquals(0, c.requestCount)
+        assertTrue(c.port !in connected)
     }
 
     @Test
@@ -322,17 +429,33 @@ class CrossOriginRedirectTest {
     fun withPinsARedirectToAnUnpinnedHostIsRefused() {
         val a = server(https = true)
         val b = server(https = true)
+        val c = server(https = true)
         val pin = CertificatePinner.pin(leaf.certificate)
-        val clients = clients(TlsPolicy.pinned("node1.example.test", pin).withPins("node2.example.test", pin))
-        // The same host on another port, and another pinned host, keep working.
-        a.enqueue(redirect(302, b.at("node1.example.test")))
-        b.enqueue(redirect(302, a.at("node2.example.test")))
-        a.enqueue(ok("pinned"))
-        assertEquals("pinned", execute(clients, get(a.at("node1.example.test"))).getOrThrow().body)
-        a.enqueue(redirect(302, b.at("evil.test")))
-        val result = execute(clients, get(a.at("node1.example.test")))
-        assertTrue(result.exceptionOrNull() is ProtocolException, result.toString())
-        assertEquals(1, b.requestCount)
+        for (policy in listOf(TlsPolicy.pinned("node1.example.test", pin).withPins("node2.example.test", pin), TlsPolicy.pinned("*.example.test", pin))) {
+            val clients = clients(policy)
+            // The same host on another port, and another pinned host (also by a wildcard), keep working.
+            a.enqueue(redirect(302, b.at("node1.example.test")))
+            b.enqueue(redirect(302, a.at("node2.example.test")))
+            a.enqueue(ok("pinned"))
+            assertEquals("pinned", execute(clients, get(a.at("node1.example.test"))).getOrThrow().body)
+            // Refused before any connection to the unpinned host.
+            a.enqueue(redirect(302, c.at("evil.test")))
+            val result = execute(clients, get(a.at("node1.example.test")))
+            assertTrue(result.exceptionOrNull() is ProtocolException, result.toString())
+        }
+        assertEquals(0, c.requestCount)
+        assertTrue(c.port !in connected)
+    }
+
+    // Pins elsewhere in a shared client do not restrict a server they do not cover.
+    @Test
+    fun pinsForOtherHostsDoNotRestrictAnUnpinnedServer() {
+        val a = server()
+        val b = server()
+        val clients = clients(TlsPolicy.pinned("api.example.test", CertificatePinner.pin(leaf.certificate)))
+        a.enqueue(redirect(302, b.at("node2.example.test")))
+        b.enqueue(ok("followed"))
+        assertEquals("followed", execute(clients, get(a.at("node1.example.test"))).getOrThrow().body)
     }
 
     // The real engine and its jar behind OkHttp: what each hop of a redirected poll carries.

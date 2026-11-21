@@ -278,10 +278,10 @@ class OkHttpEngineClientsTest {
         return TlsPolicy.systemDefault().withClientCertificate(identity.keyManager).applyTo(base).build()
     }
 
-    // With a client certificate configured; without one, polling follows redirects to other
-    // origins without credentials (CrossOriginRedirectTest).
+    // Without a client certificate, polling follows redirects to other origins without
+    // credentials (CrossOriginRedirectTest).
     @Test
-    fun followsRedirectsOnlyWithinTheOrigin() {
+    fun withAClientCertificateFollowsRedirectsOnlyWithinTheOrigin() {
         val other = MockWebServer()
         other.start()
         try {
@@ -338,19 +338,21 @@ class OkHttpEngineClientsTest {
     }
 
     @Test
-    fun followsSameOriginRedirectsLikeOkHttp() {
+    fun followsSameOriginRedirectsWithoutLosingAPost() {
         val clients = OkHttpEngineClients()
-        // 303 turns a POST into a GET without body; 307 and 308 repeat it with its body.
-        val post = EngineHttpRequest("POST", server.url("/socket.io/?EIO=4&sid=a").toString(), listOf("X-Api-Key" to "k"), "4hi", null)
+        // A GET follows a 303; a POST is never turned into a body-less GET (its packets would be
+        // lost), only 307 and 308 repeat it with its body.
         server.enqueue(MockResponse.Builder().code(303).addHeader("Location", "/socket.io/?moved=303").build())
         server.enqueue(MockResponse.Builder().body("got").build())
-        assertEquals("got", execute(clients, post).getOrThrow().body)
+        assertEquals("got", execute(clients, get()).getOrThrow().body)
         server.takeRequest()
         val redirected = server.takeRequest()
         assertEquals("GET", redirected.method)
         assertEquals("/socket.io/?moved=303", redirected.target)
-        assertEquals("k", redirected.headers["X-Api-Key"])
-        assertEquals(0L, redirected.bodySize)
+        val post = EngineHttpRequest("POST", server.url("/socket.io/?EIO=4&sid=a").toString(), listOf("X-Api-Key" to "k"), "4hi", null)
+        server.enqueue(MockResponse.Builder().code(303).addHeader("Location", "/socket.io/?moved=303").build())
+        assertTrue(execute(clients, post).exceptionOrNull() is java.net.ProtocolException)
+        server.takeRequest()
         for (code in listOf(307, 308)) {
             server.enqueue(MockResponse.Builder().code(code).addHeader("Location", "/socket.io/?moved=$code").build())
             server.enqueue(MockResponse.Builder().body("posted").build())

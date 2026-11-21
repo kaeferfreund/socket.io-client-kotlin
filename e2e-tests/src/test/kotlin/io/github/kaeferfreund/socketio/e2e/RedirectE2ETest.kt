@@ -11,19 +11,24 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 
 /**
- * Polling through a redirect to another origin, against the upstream engine server: a
- * front server on `node1.example.test` answers every request with a 307 to the Node fixture
- * on `127.0.0.1`. The handshake, the polls and the POSTs (307 repeats them with their body)
- * reach the fixture, which reports the headers of the POST that carried `sendHeaders`.
+ * Polling through a redirect to another origin, against the upstream engine server: a front
+ * server on `node1.example.test` answers every request with a 307. Polls (GET) go to the Node
+ * fixture on `127.0.0.1`, another host; POSTs, whose body carries the packets, are repeated only
+ * on the first host, so they go to the fixture's port on `node1.example.test`. The fixture
+ * reports the headers of the POST that carried `sendHeaders`.
  */
 class RedirectE2ETest {
     private val loopback = InetAddress.getByName("127.0.0.1")
 
-    private fun redirector(target: String): HttpServer =
+    private fun redirector(
+        getTarget: String,
+        postTarget: String,
+    ): HttpServer =
         HttpServer.create(InetSocketAddress(loopback, 0), 0).apply {
             createContext("/") { exchange ->
                 exchange.requestBody.use { it.readAllBytes() }
                 val query = exchange.requestURI.rawQuery?.let { "?$it" } ?: ""
+                val target = if (exchange.requestMethod == "POST") postTarget else getTarget
                 exchange.responseHeaders.add("Location", target + exchange.requestURI.rawPath + query)
                 exchange.sendResponseHeaders(307, -1)
                 exchange.close()
@@ -32,9 +37,10 @@ class RedirectE2ETest {
         }
 
     @Test
-    fun aRedirectToAnotherOriginGetsTheJarCookiesOfThatOriginAndNoCredentials() =
+    fun pollsFollowARedirectToAnotherOriginAndPostsStayOnTheFirstHost() =
         engineE2E {
-            val front = redirector(url.trimEnd('/'))
+            val fixturePort = java.net.URI(url).port
+            val front = redirector(url.trimEnd('/'), "http://node1.example.test:$fixturePort")
             try {
                 val clients = OkHttpEngineClients(OkHttpClient.Builder().dns { listOf(loopback) }.build()).clients
                 val client =
@@ -51,9 +57,10 @@ class RedirectE2ETest {
                 assertEquals("hi", client.nextText())
                 client.onExecutor { send("sendHeaders") }
                 val headers = SocketIOJson.parse(client.nextText()).obj!!
-                // The fixture set `1=1` and the `Secure` `2=2` (loopback counts as secure) for
-                // 127.0.0.1; the explicit header and Authorization stay with node1.example.test.
-                assertEquals("1=1; 2=2", headers["cookie"]!!.string)
+                // The fixture set `1=1` and `2=2` for 127.0.0.1, where the polls went; the POST on
+                // node1.example.test gets only the explicit header. Authorization stays with the
+                // front server's origin, other headers follow.
+                assertEquals("app=1", headers["cookie"]!!.string)
                 assertEquals(null, headers["authorization"])
                 assertEquals("key", headers["x-api-key"]!!.string)
             } finally {
