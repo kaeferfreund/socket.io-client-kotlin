@@ -111,9 +111,11 @@ dependencies {
 
 Releases are published to Maven Central; GitHub Packages carries the same
 versions. 17.0.0 is only on GitHub Packages.
-The major version matches the Swift client
+The Swift client
 [kaeferfreund/socket.io-client-swift](https://github.com/kaeferfreund/socket.io-client-swift)
-(17). A version requirement installs a **published release**, not the development
+is currently versioned separately, so the numbers differ: Kotlin 17.2 and Swift 18.0
+apply the same redirect and cookie rules. From the next major release on, both
+clients will carry the same version number. A version requirement installs a **published release**, not the development
 branch you are viewing; to try that, run `./gradlew publishToMavenLocal`, add
 `mavenLocal()` to the repositories and depend on the `VERSION_NAME` in
 `gradle.properties`.
